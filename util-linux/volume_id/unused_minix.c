@@ -18,6 +18,13 @@
  *	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+//kbuild:### lib-$(CONFIG_FEATURE_VOLUMEID_MINIX) += minix.o
+
+//config:### config FEATURE_VOLUMEID_MINIX
+//config:###	bool "minix filesystem"
+//config:###	default y
+//config:###	depends on VOLUMEID
+
 #include "volume_id_internal.h"
 
 struct minix_super_block {

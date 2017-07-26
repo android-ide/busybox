@@ -17,6 +17,24 @@ char* FAST_FUNC strchrnul(const char *s, int c)
 }
 #endif
 
+#ifndef HAVE_USLEEP
+int FAST_FUNC usleep(unsigned usec)
+{
+	struct timespec ts;
+	ts.tv_sec = usec / 1000000u;
+	ts.tv_nsec = (usec % 1000000u) * 1000u;
+	/*
+	 * If a signal has non-default handler, nanosleep returns early.
+	 * Our version of usleep doesn't return early
+	 * if interrupted by such signals:
+	 *
+	 */
+	while (nanosleep(&ts, &ts) != 0)
+		continue;
+	return 0;
+}
+#endif
+
 #ifndef HAVE_VASPRINTF
 int FAST_FUNC vasprintf(char **string_ptr, const char *format, va_list p)
 {
@@ -28,14 +46,16 @@ int FAST_FUNC vasprintf(char **string_ptr, const char *format, va_list p)
 	r = vsnprintf(buf, 128, format, p);
 	va_end(p);
 
+	/* Note: can't use xstrdup/xmalloc, they call vasprintf (us) on failure! */
+
 	if (r < 128) {
 		va_end(p2);
-		*string_ptr = xstrdup(buf);
-		return r;
+		*string_ptr = strdup(buf);
+		return (*string_ptr ? r : -1);
 	}
 
-	*string_ptr = xmalloc(r+1);
-	r = vsnprintf(*string_ptr, r+1, format, p2);
+	*string_ptr = malloc(r+1);
+	r = (*string_ptr ? vsnprintf(*string_ptr, r+1, format, p2) : -1);
 	va_end(p2);
 
 	return r;
@@ -172,5 +192,24 @@ ssize_t FAST_FUNC getline(char **lineptr, size_t *n, FILE *stream)
 	*lineptr = line;
 	*n = alloced;
 	return len;
+}
+#endif
+
+#ifndef HAVE_TTYNAME_R
+int ttyname_r(int fd, char *buf, size_t buflen)
+{
+	int r;
+	char path[sizeof("/proc/self/fd/%d") + sizeof(int)*3];
+
+	if (!isatty(fd))
+		return errno == EINVAL ? ENOTTY : errno;
+	sprintf(path, "/proc/self/fd/%d", fd);
+	r = readlink(path, buf, buflen);
+	if (r < 0)
+		return errno;
+	if (r >= buflen)
+		return ERANGE;
+	buf[r] = '\0';
+	return 0;
 }
 #endif

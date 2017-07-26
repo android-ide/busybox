@@ -31,6 +31,16 @@
  * Taken from util-linux and adapted for busybox by
  * Paul Mundt <lethal@linux-sh.org>.
  */
+//config:config READPROFILE
+//config:	bool "readprofile"
+//config:	default y
+//config:	#select PLATFORM_LINUX
+//config:	help
+//config:	  This allows you to parse /proc/profile for basic profiling.
+
+//applet:IF_READPROFILE(APPLET(readprofile, BB_DIR_USR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_READPROFILE) += readprofile.o
 
 //usage:#define readprofile_trivial_usage
 //usage:       "[OPTIONS]"
@@ -99,8 +109,7 @@ int readprofile_main(int argc UNUSED_PARAM, char **argv)
 	proFile = defaultpro;
 	mapFile = defaultmap;
 
-	opt_complementary = "M+"; /* -M N */
-	opt = getopt32(argv, "M:m:p:nabsirv", &multiplier, &mapFile, &proFile);
+	opt = getopt32(argv, "M:+m:p:nabsirv", &multiplier, &mapFile, &proFile);
 
 	if (opt & (OPT_M|OPT_r)) { /* mult or reset, or both */
 		int fd, to_write;
@@ -152,7 +161,7 @@ int readprofile_main(int argc UNUSED_PARAM, char **argv)
 
 	step = buf[0];
 	if (optInfo) {
-		printf("Sampling_step: %i\n", step);
+		printf("Sampling_step: %u\n", step);
 		return EXIT_SUCCESS;
 	}
 
@@ -165,7 +174,7 @@ int readprofile_main(int argc UNUSED_PARAM, char **argv)
 			bb_error_msg_and_die("%s(%i): wrong map line",
 					mapFile, maplineno);
 
-		if (!strcmp(fn_name, "_stext")) /* only elf works like this */ {
+		if (strcmp(fn_name, "_stext") == 0) /* only elf works like this */ {
 			add0 = fn_add;
 			break;
 		}
@@ -215,14 +224,15 @@ int readprofile_main(int argc UNUSED_PARAM, char **argv)
 		if (optBins) {
 			if (optVerbose || this > 0)
 				printf("  total\t\t\t\t%u\n", this);
-		} else if ((this || optAll)
-		        && (fn_len = next_add-fn_add) != 0
+		} else
+		if ((this || optAll)
+		 && (fn_len = next_add-fn_add) != 0
 		) {
 			if (optVerbose)
-				printf("%016llx %-40s %6i %8.4f\n", fn_add,
+				printf("%016llx %-40s %6u %8.4f\n", fn_add,
 					fn_name, this, this/(double)fn_len);
 			else
-				printf("%6i %-40s %8.4f\n",
+				printf("%6u %-40s %8.4f\n",
 					this, fn_name, this/(double)fn_len);
 			if (optSub) {
 				unsigned long long scan;
@@ -246,14 +256,14 @@ int readprofile_main(int argc UNUSED_PARAM, char **argv)
 	}
 
 	/* clock ticks, out of kernel text - probably modules */
-	printf("%6i %s\n", buf[len/sizeof(*buf)-1], "*unknown*");
+	printf("%6u %s\n", buf[len/sizeof(*buf)-1], "*unknown*");
 
 	/* trailer */
 	if (optVerbose)
-		printf("%016x %-40s %6i %8.4f\n",
+		printf("%016x %-40s %6u %8.4f\n",
 			0, "total", total, total/(double)(fn_add-add0));
 	else
-		printf("%6i %-40s %8.4f\n",
+		printf("%6u %-40s %8.4f\n",
 			total, "total", total/(double)(fn_add-add0));
 
 	fclose(map);

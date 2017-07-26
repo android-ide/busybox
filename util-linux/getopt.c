@@ -28,34 +28,59 @@
  *  Removed --version/-V and --help/-h
  *  Removed parse_error(), using bb_error_msg() from Busybox instead
  *  Replaced our_malloc with xmalloc and our_realloc with xrealloc
- *
  */
+//config:config GETOPT
+//config:	bool "getopt"
+//config:	default y
+//config:	help
+//config:	  The getopt utility is used to break up (parse) options in command
+//config:	  lines to make it easy to write complex shell scripts that also check
+//config:	  for legal (and illegal) options. If you want to write horribly
+//config:	  complex shell scripts, or use some horribly complex shell script
+//config:	  written by others, this utility may be for you. Most people will
+//config:	  wisely leave this disabled.
+//config:
+//config:config FEATURE_GETOPT_LONG
+//config:	bool "Support option -l"
+//config:	default y if LONG_OPTS
+//config:	depends on GETOPT
+//config:	help
+//config:	  Enable support for long options (option -l).
+
+//applet:IF_GETOPT(APPLET(getopt, BB_DIR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_GETOPT) += getopt.o
 
 //usage:#define getopt_trivial_usage
 //usage:       "[OPTIONS] [--] OPTSTRING PARAMS"
 //usage:#define getopt_full_usage "\n\n"
 //usage:	IF_LONG_OPTS(
-//usage:       "	-a,--alternative		Allow long options starting with single -"
-//usage:     "\n	-l,--longoptions=LOPT[,...]	Long options to be recognized"
-//usage:     "\n	-n,--name=PROGNAME		The name under which errors are reported"
-//usage:     "\n	-o,--options=OPTSTRING		Short options to be recognized"
-//usage:     "\n	-q,--quiet			Disable error reporting by getopt(3)"
+//usage:	IF_FEATURE_GETOPT_LONG(
+//usage:       "	-a,--alternative		Allow long options starting with single -\n"
+//usage:       "	-l,--longoptions LOPT[,...]	Long options to recognize\n"
+//usage:	)
+//usage:       "	-n,--name PROGNAME		The name under which errors are reported"
+//usage:     "\n	-o,--options OPTSTRING		Short options to recognize"
+//usage:     "\n	-q,--quiet			No error messages on unrecognized options"
 //usage:     "\n	-Q,--quiet-output		No normal output"
-//usage:     "\n	-s,--shell=SHELL		Set shell quoting conventions"
-//usage:     "\n	-T,--test			Test for getopt(1) version"
-//usage:     "\n	-u,--unquoted			Don't quote the output"
+//usage:     "\n	-s,--shell SHELL		Set shell quoting conventions"
+//usage:     "\n	-T,--test			Version test (exits with 4)"
+//usage:     "\n	-u,--unquoted			Don't quote output"
 //usage:	)
 //usage:	IF_NOT_LONG_OPTS(
-//usage:       "	-a		Allow long options starting with single -"
-//usage:     "\n	-l LOPT[,...]	Long options to be recognized"
-//usage:     "\n	-n PROGNAME	The name under which errors are reported"
-//usage:     "\n	-o OPTSTRING	Short options to be recognized"
-//usage:     "\n	-q		Disable error reporting by getopt(3)"
+//usage:	IF_FEATURE_GETOPT_LONG(
+//usage:       "	-a		Allow long options starting with single -\n"
+//usage:       "	-l LOPT[,...]	Long options to recognize\n"
+//usage:	)
+//usage:       "	-n PROGNAME	The name under which errors are reported"
+//usage:     "\n	-o OPTSTRING	Short options to recognize"
+//usage:     "\n	-q		No error messages on unrecognized options"
 //usage:     "\n	-Q		No normal output"
 //usage:     "\n	-s SHELL	Set shell quoting conventions"
-//usage:     "\n	-T		Test for getopt(1) version"
-//usage:     "\n	-u		Don't quote the output"
+//usage:     "\n	-T		Version test (exits with 4)"
+//usage:     "\n	-u		Don't quote output"
 //usage:	)
+//usage:	IF_FEATURE_GETOPT_LONG( /* example uses -l, needs FEATURE_GETOPT_LONG */
 //usage:     "\n"
 //usage:     "\nExample:"
 //usage:     "\n"
@@ -73,6 +98,7 @@
 //usage:     "\n	*)	echo Error; exit 1;;"
 //usage:     "\n	esac"
 //usage:     "\ndone"
+//usage:	)
 //usage:
 //usage:#define getopt_example_usage
 //usage:       "$ cat getopt.test\n"
@@ -214,32 +240,23 @@ static const char *normalize(const char *arg)
 static int generate_output(char **argv, int argc, const char *optstr, const struct option *longopts)
 {
 	int exit_code = 0; /* We assume everything will be OK */
-	int opt;
-#if ENABLE_FEATURE_GETOPT_LONG
-	int longindex;
-#endif
-	const char *charptr;
 
 	if (quiet_errors) /* No error reporting from getopt(3) */
 		opterr = 0;
 
 	/* We used it already in main() in getopt32(),
 	 * we *must* reset getopt(3): */
-#ifdef __GLIBC__
-	optind = 0;
-#else /* BSD style */
-	optind = 1;
-	/* optreset = 1; */
-#endif
+	GETOPT_RESET();
 
 	while (1) {
-		opt =
 #if ENABLE_FEATURE_GETOPT_LONG
-			alternative ?
-			getopt_long_only(argc, argv, optstr, longopts, &longindex) :
-			getopt_long(argc, argv, optstr, longopts, &longindex);
+		int longindex;
+		int opt = alternative
+			? getopt_long_only(argc, argv, optstr, longopts, &longindex)
+			: getopt_long(argc, argv, optstr, longopts, &longindex)
+		;
 #else
-			getopt(argc, argv, optstr);
+		int opt = getopt(argc, argv, optstr);
 #endif
 		if (opt == -1)
 			break;
@@ -257,9 +274,10 @@ static int generate_output(char **argv, int argc, const char *optstr, const stru
 			if (opt == NON_OPT)
 				printf(" %s", normalize(optarg));
 			else {
+				const char *charptr;
 				printf(" -%c", opt);
 				charptr = strchr(optstr, opt);
-				if (charptr != NULL && *++charptr == ':')
+				if (charptr && *++charptr == ':')
 					printf(" %s",
 						normalize(optarg ? optarg : ""));
 			}
@@ -267,9 +285,11 @@ static int generate_output(char **argv, int argc, const char *optstr, const stru
 	}
 
 	if (!quiet_output) {
+		unsigned idx;
 		printf(" --");
-		while (optind < argc)
-			printf(" %s", normalize(argv[optind++]));
+		idx = optind;
+		while (argv[idx])
+			printf(" %s", normalize(argv[idx++]));
 		bb_putchar('\n');
 	}
 	return exit_code;
@@ -322,9 +342,9 @@ static struct option *add_long_options(struct option *long_options, char *option
 
 static void set_shell(const char *new_shell)
 {
-	if (!strcmp(new_shell, "bash") || !strcmp(new_shell, "sh"))
+	if (strcmp(new_shell, "bash") == 0 || strcmp(new_shell, "sh") == 0)
 		return;
-	if (!strcmp(new_shell, "tcsh") || !strcmp(new_shell, "csh"))
+	if (strcmp(new_shell, "tcsh") == 0 || strcmp(new_shell, "csh") == 0)
 		option_mask32 |= SHELL_IS_TCSH;
 	else
 		bb_error_msg("unknown shell '%s', assuming bash", new_shell);
@@ -373,7 +393,7 @@ int getopt_main(int argc, char **argv)
 		if (compatible) {
 			/* For some reason, the original getopt gave no error
 			 * when there were no arguments. */
-			printf(" --\n");
+			puts(" --");
 			return 0;
 		}
 		bb_error_msg_and_die("missing optstring argument");
@@ -392,8 +412,7 @@ int getopt_main(int argc, char **argv)
 	opt = getopt32(argv, "+o:n:qQs:Tu", &optstr, &name, &s_arg);
 #else
 	applet_long_options = getopt_longopts;
-	opt_complementary = "l::";
-	opt = getopt32(argv, "+o:n:qQs:Tual:",
+	opt = getopt32(argv, "+o:n:qQs:Tual:*",
 					&optstr, &name, &s_arg, &l_arg);
 	/* Effectuate the read options for the applet itself */
 	while (l_arg) {

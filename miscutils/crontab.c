@@ -9,6 +9,19 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config CRONTAB
+//config:	bool "crontab"
+//config:	default y
+//config:	help
+//config:	  Crontab manipulates the crontab for a particular user. Only
+//config:	  the superuser may specify a different user and/or crontab directory.
+//config:	  Note that Busybox binary must be setuid root for this applet to
+//config:	  work properly.
+
+/* Needs to be run by root or be suid root - needs to change /var/spool/cron* files: */
+//applet:IF_CRONTAB(APPLET(crontab, BB_DIR_USR_BIN, BB_SUID_REQUIRE))
+
+//kbuild:lib-$(CONFIG_CRONTAB) += crontab.o
 
 //usage:#define crontab_trivial_usage
 //usage:       "[-c DIR] [-u USER] [-ler]|[FILE]"
@@ -53,28 +66,6 @@ static void edit_file(const struct passwd *pas, const char *file)
 
 	BB_EXECLP(ptr, ptr, file, NULL);
 	bb_perror_msg_and_die("can't execute '%s'", ptr);
-}
-
-static int open_as_user(const struct passwd *pas, const char *file)
-{
-	pid_t pid;
-	char c;
-
-	pid = xvfork();
-	if (pid) { /* PARENT */
-		if (wait4pid(pid) == 0) {
-			/* exitcode 0: child says it can read */
-			return open(file, O_RDONLY);
-		}
-		return -1;
-	}
-
-	/* CHILD */
-	/* initgroups, setgid, setuid */
-	change_identity(pas);
-	/* We just try to read one byte. If it works, file is readable
-	 * under this user. We signal that by exiting with 0. */
-	_exit(safe_read(xopen(file, O_RDONLY), &c, 1) < 0);
 }
 
 int crontab_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
@@ -137,10 +128,7 @@ int crontab_main(int argc UNUSED_PARAM, char **argv)
 		if (!argv[0])
 			bb_show_usage();
 		if (NOT_LONE_DASH(argv[0])) {
-			src_fd = open_as_user(pas, argv[0]);
-			if (src_fd < 0)
-				bb_error_msg_and_die("user %s cannot read %s",
-						pas->pw_name, argv[0]);
+			src_fd = xopen_as_uid_gid(argv[0], O_RDONLY, pas->pw_uid, pas->pw_gid);
 		}
 	}
 
@@ -195,7 +183,6 @@ int crontab_main(int argc UNUSED_PARAM, char **argv)
 			unlink(tmp_fname);
 		/*free(tmp_fname);*/
 		/*free(new_fname);*/
-
 	} /* switch */
 
 	/* Bump notification file.  Handle window where crond picks file up

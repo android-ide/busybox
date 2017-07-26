@@ -10,6 +10,15 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config NSLOOKUP
+//config:	bool "nslookup"
+//config:	default y
+//config:	help
+//config:	  nslookup is a tool to query Internet name servers.
+
+//applet:IF_NSLOOKUP(APPLET(nslookup, BB_DIR_USR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_NSLOOKUP) += nslookup.o
 
 //usage:#define nslookup_trivial_usage
 //usage:       "[HOST] [SERVER]"
@@ -138,6 +147,9 @@ static void set_default_dns(const char *server)
 {
 	len_and_sockaddr *lsa;
 
+	if (!server)
+		return;
+
 	/* NB: this works even with, say, "[::1]:5353"! :) */
 	lsa = xhost2sockaddr(server, 53);
 
@@ -181,9 +193,17 @@ int nslookup_main(int argc, char **argv)
 	/* (but it also says "may be enabled in /etc/resolv.conf") */
 	/*_res.options |= RES_USE_INET6;*/
 
-	if (argv[2])
-		set_default_dns(argv[2]);
+	set_default_dns(argv[2]);
 
 	server_print();
+
+	/* getaddrinfo and friends are free to request a resolver
+	 * reinitialization. Just in case, set_default_dns() again
+	 * after getaddrinfo (in server_print). This reportedly helps
+	 * with bug 675 "nslookup does not properly use second argument"
+	 * at least on Debian Wheezy and Openwrt AA (eglibc based).
+	 */
+	set_default_dns(argv[2]);
+
 	return print_host(argv[1], "Name:");
 }

@@ -6,8 +6,18 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config INSMOD
+//config:	bool "insmod"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  insmod is used to load specified modules in the running kernel.
 
-//applet:IF_INSMOD(APPLET(insmod, BB_DIR_SBIN, BB_SUID_DROP))
+//applet:IF_INSMOD(IF_NOT_MODPROBE_SMALL(APPLET(insmod, BB_DIR_SBIN, BB_SUID_DROP)))
+
+//kbuild:ifneq ($(CONFIG_MODPROBE_SMALL),y)
+//kbuild:lib-$(CONFIG_INSMOD) += insmod.o modutils.o
+//kbuild:endif
 
 #include "libbb.h"
 #include "modutils.h"
@@ -17,11 +27,11 @@
 
 //usage:#if !ENABLE_MODPROBE_SMALL
 //usage:#define insmod_trivial_usage
-//usage:	IF_FEATURE_2_4_MODULES("[OPTIONS] MODULE ")
-//usage:	IF_NOT_FEATURE_2_4_MODULES("FILE ")
-//usage:	"[SYMBOL=VALUE]..."
+//usage:	IF_FEATURE_2_4_MODULES("[OPTIONS] MODULE")
+//usage:	IF_NOT_FEATURE_2_4_MODULES("FILE")
+//usage:	IF_FEATURE_CMDLINE_MODULE_OPTIONS(" [SYMBOL=VALUE]...")
 //usage:#define insmod_full_usage "\n\n"
-//usage:       "Load the specified kernel modules into the kernel"
+//usage:       "Load kernel module"
 //usage:	IF_FEATURE_2_4_MODULES( "\n"
 //usage:     "\n	-f	Force module to load into the wrong kernel version"
 //usage:     "\n	-k	Make module autoclean-able"

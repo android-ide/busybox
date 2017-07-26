@@ -25,6 +25,57 @@
  * 2002-04-20
  * IPV6 support added by Bart Visscher <magick@linux-fan.com>
  */
+//config:config IFCONFIG
+//config:	bool "ifconfig"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  Ifconfig is used to configure the kernel-resident network interfaces.
+//config:
+//config:config FEATURE_IFCONFIG_STATUS
+//config:	bool "Enable status reporting output (+7k)"
+//config:	default y
+//config:	depends on IFCONFIG
+//config:	help
+//config:	  If ifconfig is called with no arguments it will display the status
+//config:	  of the currently active interfaces.
+//config:
+//config:config FEATURE_IFCONFIG_SLIP
+//config:	bool "Enable slip-specific options \"keepalive\" and \"outfill\""
+//config:	default y
+//config:	depends on IFCONFIG
+//config:	help
+//config:	  Allow "keepalive" and "outfill" support for SLIP. If you're not
+//config:	  planning on using serial lines, leave this unchecked.
+//config:
+//config:config FEATURE_IFCONFIG_MEMSTART_IOADDR_IRQ
+//config:	bool "Enable options \"mem_start\", \"io_addr\", and \"irq\""
+//config:	default y
+//config:	depends on IFCONFIG
+//config:	help
+//config:	  Allow the start address for shared memory, start address for I/O,
+//config:	  and/or the interrupt line used by the specified device.
+//config:
+//config:config FEATURE_IFCONFIG_HW
+//config:	bool "Enable option \"hw\" (ether only)"
+//config:	default y
+//config:	depends on IFCONFIG
+//config:	help
+//config:	  Set the hardware address of this interface, if the device driver
+//config:	  supports  this  operation. Currently, we only support the 'ether'
+//config:	  class.
+//config:
+//config:config FEATURE_IFCONFIG_BROADCAST_PLUS
+//config:	bool "Set the broadcast automatically"
+//config:	default y
+//config:	depends on IFCONFIG
+//config:	help
+//config:	  Setting this will make ifconfig attempt to find the broadcast
+//config:	  automatically if the value '+' is used.
+
+//applet:IF_IFCONFIG(APPLET(ifconfig, BB_DIR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_IFCONFIG) += ifconfig.o interface.o
 
 //usage:#define ifconfig_trivial_usage
 //usage:	IF_FEATURE_IFCONFIG_STATUS("[-a]") " interface [address]"
@@ -56,7 +107,7 @@
 #endif
 
 #if ENABLE_FEATURE_IFCONFIG_SLIP
-# include <net/if_slip.h>
+# include <linux/if_slip.h>
 #endif
 
 /* I don't know if this is needed for busybox or not.  Anyone? */
@@ -264,49 +315,6 @@ static const struct options OptArray[] = {
 	{ "down",        N_CLR,         0,               IFF_UP },
 	{ NULL,          0,             ARG_HOSTNAME,    (IFF_UP | IFF_RUNNING) }
 };
-
-#if ENABLE_FEATURE_IFCONFIG_HW
-/* Input an Ethernet address and convert to binary. */
-static int in_ether(const char *bufp, struct sockaddr *sap)
-{
-	char *ptr;
-	int i, j;
-	unsigned char val;
-	unsigned char c;
-
-	sap->sa_family = ARPHRD_ETHER;
-	ptr = (char *) sap->sa_data;
-
-	i = 0;
-	do {
-		j = val = 0;
-
-		/* We might get a semicolon here - not required. */
-		if (i && (*bufp == ':')) {
-			bufp++;
-		}
-
-		do {
-			c = *bufp;
-			if (((unsigned char)(c - '0')) <= 9) {
-				c -= '0';
-			} else if ((unsigned char)((c|0x20) - 'a') <= 5) {
-				c = (unsigned char)((c|0x20) - 'a') + 10;
-			} else if (j && (c == ':' || c == 0)) {
-				break;
-			} else {
-				return -1;
-			}
-			++bufp;
-			val <<= 4;
-			val += c;
-		} while (++j < 2);
-		*ptr++ = val;
-	} while (++i < ETH_ALEN);
-
-	return *bufp; /* Error if we don't end at end of string. */
-}
-#endif
 
 int ifconfig_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int ifconfig_main(int argc UNUSED_PARAM, char **argv)

@@ -58,6 +58,8 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 
+//kbuild:lib-$(CONFIG_FEATURE_2_4_MODULES) += modutils-24.o
+
 #include "libbb.h"
 #include "modutils.h"
 #include <sys/utsname.h>
@@ -2255,7 +2257,7 @@ static int add_symbols_from(struct obj_file *f,
 		 * symbols so they cannot fudge it by adding the prefix on
 		 * their references.
 		 */
-		if (strncmp((char *)s->name, "GPLONLY_", 8) == 0) {
+		if (is_prefixed_with((char *)s->name, "GPLONLY_")) {
 #if ENABLE_FEATURE_CHECK_TAINTED_MODULE
 			if (gpl)
 				s->name += 8;

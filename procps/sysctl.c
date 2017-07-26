@@ -10,6 +10,15 @@
  * v1.01   - added -p <preload> to preload values from a file
  * v1.01.1 - busybox applet aware by <solar@gentoo.org>
  */
+//config:config BB_SYSCTL
+//config:	bool "sysctl"
+//config:	default y
+//config:	help
+//config:	  Configure kernel parameters at runtime.
+
+//applet:IF_BB_SYSCTL(APPLET(sysctl, BB_DIR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_BB_SYSCTL) += sysctl.o
 
 //usage:#define sysctl_trivial_usage
 //usage:       "[OPTIONS] [KEY[=VALUE]]..."
@@ -129,6 +138,9 @@ static int sysctl_act_on_setting(char *setting)
 
 	if (fd < 0) {
 		switch (errno) {
+		case EACCES:
+			/* Happens for write-only settings, e.g. net.ipv6.route.flush */
+			goto end;
 		case ENOENT:
 			if (option_mask32 & FLAG_SHOW_KEY_ERRORS)
 				bb_error_msg("error: '%s' is an unknown key", outname);

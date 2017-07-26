@@ -14,12 +14,6 @@
  * 2) Don't check for options, as per SUSv3.
  * 3) Save some space by using strcmp().  Calling strncmp() here was silly.
  */
-
-/* BB_AUDIT SUSv3 compliant */
-/* http://www.opengroup.org/onlinepubs/007904975/utilities/basename.html */
-
-//kbuild:lib-$(CONFIG_BASENAME) += basename.o
-
 //config:config BASENAME
 //config:	bool "basename"
 //config:	default y
@@ -28,10 +22,17 @@
 //config:	  leaving just the filename itself. Enable this option if you wish
 //config:	  to enable the 'basename' utility.
 
+//applet:IF_BASENAME(APPLET_NOFORK(basename, basename, BB_DIR_USR_BIN, BB_SUID_DROP, basename))
+
+//kbuild:lib-$(CONFIG_BASENAME) += basename.o
+
+/* BB_AUDIT SUSv3 compliant */
+/* http://www.opengroup.org/onlinepubs/007904975/utilities/basename.html */
+
 //usage:#define basename_trivial_usage
 //usage:       "FILE [SUFFIX]"
 //usage:#define basename_full_usage "\n\n"
-//usage:       "Strip directory path and .SUFFIX from FILE\n"
+//usage:       "Strip directory path and .SUFFIX from FILE"
 //usage:
 //usage:#define basename_example_usage
 //usage:       "$ basename /usr/local/bin/foo\n"

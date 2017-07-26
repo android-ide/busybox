@@ -6,9 +6,6 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
-
-#include "libbb.h"
-
 //config:config NC
 //config:	bool "nc"
 //config:	default y
@@ -24,7 +21,7 @@
 //config:	  Allow netcat to act as a server.
 //config:
 //config:config NC_EXTRA
-//config:	bool "Netcat extensions (-eiw and filename)"
+//config:	bool "Netcat extensions (-eiw and -f FILE)"
 //config:	default y
 //config:	depends on NC
 //config:	help
@@ -40,8 +37,14 @@
 //config:	  This option makes nc closely follow original nc-1.10.
 //config:	  The code is about 2.5k bigger. It enables
 //config:	  -s ADDR, -n, -u, -v, -o FILE, -z options, but loses
-//config:	  busybox-specific extensions: -f FILE and -ll.
+//config:	  busybox-specific extensions: -f FILE.
 
+//applet:IF_NC(APPLET(nc, BB_DIR_USR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_NC) += nc.o
+
+#include "libbb.h"
+#include "common_bufsiz.h"
 #if ENABLE_NC_110_COMPAT
 # include "nc_bloaty.c"
 #else
@@ -60,17 +63,18 @@
 //usage:#define nc_full_usage "\n\n"
 //usage:       "Open a pipe to IP:PORT" IF_NC_EXTRA(" or FILE")
 //usage:	NC_OPTIONS_STR
-//usage:	IF_NC_EXTRA(
-//usage:     "\n	-e PROG	Run PROG after connect"
 //usage:	IF_NC_SERVER(
 //usage:     "\n	-l	Listen mode, for inbound connects"
 //usage:	IF_NC_EXTRA(
-//usage:     "\n		(use -l twice with -e for persistent server)")
+//usage:     "\n		(use -ll with -e for persistent server)"
+//usage:	)
 //usage:     "\n	-p PORT	Local port"
 //usage:	)
-//usage:     "\n	-w SEC	Timeout for connect"
+//usage:	IF_NC_EXTRA(
+//usage:     "\n	-w SEC	Connect timeout"
 //usage:     "\n	-i SEC	Delay interval for lines sent"
 //usage:     "\n	-f FILE	Use file (ala /dev/ttyS0) instead of network"
+//usage:     "\n	-e PROG	Run PROG after connect"
 //usage:	)
 //usage:
 //usage:#define nc_notes_usage ""
@@ -113,7 +117,7 @@ int nc_main(int argc, char **argv)
 	IF_NOT_NC_EXTRA (const) unsigned delay = 0;
 	IF_NOT_NC_EXTRA (const int execparam = 0;)
 	IF_NC_EXTRA     (char **execparam = NULL;)
-	fd_set readfds, testfds;
+	struct pollfd pfds[2];
 	int opt; /* must be signed (getopt returns -1) */
 
 	if (ENABLE_NC_SERVER || ENABLE_NC_EXTRA) {
@@ -147,7 +151,7 @@ int nc_main(int argc, char **argv)
 						*p++ = argv[optind++];
 					}
 				)
-				/* optind points to argv[arvc] (NULL) now.
+				/* optind points to argv[argc] (NULL) now.
 				** FIXME: we assume that getopt will not count options
 				** possibly present on "-e PROG ARGS" and will not
 				** include them into final value of optind
@@ -226,34 +230,33 @@ int nc_main(int argc, char **argv)
 		/* child, or main thread if only one -l */
 		xmove_fd(cfd, 0);
 		xdup2(0, 1);
-		xdup2(0, 2);
+		/*xdup2(0, 2); - original nc 1.10 does this, we don't */
 		IF_NC_EXTRA(BB_EXECVP(execparam[0], execparam);)
-		/* Don't print stuff or it will go over the wire... */
-		_exit(127);
+		IF_NC_EXTRA(bb_perror_msg_and_die("can't execute '%s'", execparam[0]);)
 	}
 
-	/* Select loop copying stdin to cfd, and cfd to stdout */
+	/* loop copying stdin to cfd, and cfd to stdout */
 
-	FD_ZERO(&readfds);
-	FD_SET(cfd, &readfds);
-	FD_SET(STDIN_FILENO, &readfds);
+	pfds[0].fd = STDIN_FILENO;
+	pfds[0].events = POLLIN;
+	pfds[1].fd = cfd;
+	pfds[1].events = POLLIN;
 
+#define iobuf bb_common_bufsiz1
+	setup_common_bufsiz();
 	for (;;) {
-		int fd;
+		int fdidx;
 		int ofd;
 		int nread;
 
-		testfds = readfds;
+		if (safe_poll(pfds, 2, -1) < 0)
+			bb_perror_msg_and_die("poll");
 
-		if (select(cfd + 1, &testfds, NULL, NULL, NULL) < 0)
-			bb_perror_msg_and_die("select");
-
-#define iobuf bb_common_bufsiz1
-		fd = STDIN_FILENO;
+		fdidx = 0;
 		while (1) {
-			if (FD_ISSET(fd, &testfds)) {
-				nread = safe_read(fd, iobuf, sizeof(iobuf));
-				if (fd == cfd) {
+			if (pfds[fdidx].revents) {
+				nread = safe_read(pfds[fdidx].fd, iobuf, COMMON_BUFSIZE);
+				if (fdidx != 0) {
 					if (nread < 1)
 						exit(EXIT_SUCCESS);
 					ofd = STDOUT_FILENO;
@@ -261,8 +264,8 @@ int nc_main(int argc, char **argv)
 					if (nread < 1) {
 						/* Close outgoing half-connection so they get EOF,
 						 * but leave incoming alone so we can see response */
-						shutdown(cfd, 1);
-						FD_CLR(STDIN_FILENO, &readfds);
+						shutdown(cfd, SHUT_WR);
+						pfds[0].fd = -1;
 					}
 					ofd = cfd;
 				}
@@ -270,9 +273,9 @@ int nc_main(int argc, char **argv)
 				if (delay > 0)
 					sleep(delay);
 			}
-			if (fd == cfd)
+			if (fdidx == 1)
 				break;
-			fd = cfd;
+			fdidx++;
 		}
 	}
 }

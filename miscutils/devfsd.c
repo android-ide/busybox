@@ -53,6 +53,66 @@
     The postal address is:
       Richard Gooch, c/o ATNF, P. O. Box 76, Epping, N.S.W., 2121, Australia.
 */
+//config:config DEVFSD
+//config:	bool "devfsd (obsolete)"
+//config:	default n
+//config:	select PLATFORM_LINUX
+//config:	select FEATURE_SYSLOG
+//config:	help
+//config:	  This is deprecated and should NOT be used anymore.
+//config:	  Use linux >= 2.6 (optionally with hotplug) and mdev instead!
+//config:	  See docs/mdev.txt for detailed instructions on how to use mdev
+//config:	  instead.
+//config:
+//config:	  Provides compatibility with old device names on a devfs systems.
+//config:	  You should set it to true if you have devfs enabled.
+//config:	  The following keywords in devsfd.conf are supported:
+//config:	  "CLEAR_CONFIG", "INCLUDE", "OPTIONAL_INCLUDE", "RESTORE",
+//config:	  "PERMISSIONS", "EXECUTE", "COPY", "IGNORE",
+//config:	  "MKOLDCOMPAT", "MKNEWCOMPAT","RMOLDCOMPAT", "RMNEWCOMPAT".
+//config:
+//config:	  But only if they are written UPPERCASE!!!!!!!!
+//config:
+//config:config DEVFSD_MODLOAD
+//config:	bool "Adds support for MODLOAD keyword in devsfd.conf"
+//config:	default y
+//config:	depends on DEVFSD
+//config:	help
+//config:	  This actually doesn't work with busybox modutils but needs
+//config:	  the external modutils.
+//config:
+//config:config DEVFSD_FG_NP
+//config:	bool "Enable the -fg and -np options"
+//config:	default y
+//config:	depends on DEVFSD
+//config:	help
+//config:	  -fg  Run the daemon in the foreground.
+//config:	  -np  Exit after parsing the configuration file.
+//config:	       Do not poll for events.
+//config:
+//config:config DEVFSD_VERBOSE
+//config:	bool "Increases logging (and size)"
+//config:	default y
+//config:	depends on DEVFSD
+//config:	help
+//config:	  Increases logging to stderr or syslog.
+//config:
+//config:config FEATURE_DEVFS
+//config:	bool "Use devfs names for all devices (obsolete)"
+//config:	default n
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  This is obsolete and should NOT be used anymore.
+//config:	  Use linux >= 2.6 (optionally with hotplug) and mdev instead!
+//config:
+//config:	  For legacy systems -- if there is no way around devfsd -- this
+//config:	  tells busybox to look for names like /dev/loop/0 instead of
+//config:	  /dev/loop0. If your /dev directory has normal names instead of
+//config:	  devfs names, you don't want this.
+
+//applet:IF_DEVFSD(APPLET(devfsd, BB_DIR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_DEVFSD) += devfsd.o
 
 //usage:#define devfsd_trivial_usage
 //usage:       "mntpnt [-v]" IF_DEVFSD_FG_NP("[-fg][-np]")
@@ -284,7 +344,7 @@ static const char bb_msg_variable_not_found[] ALIGN1 = "variable: %s not found";
 
 /* Busybox stuff */
 #if ENABLE_DEVFSD_VERBOSE || ENABLE_DEBUG
-#define info_logger(p, fmt, args...)                 bb_info_msg(fmt, ## args)
+#define info_logger(p, fmt, args...)                 bb_error_msg(fmt, ## args)
 #define msg_logger(p, fmt, args...)                  bb_error_msg(fmt, ## args)
 #define msg_logger_and_die(p, fmt, args...)          bb_error_msg_and_die(fmt, ## args)
 #define error_logger(p, fmt, args...)                bb_perror_msg(fmt, ## args)
@@ -1083,21 +1143,23 @@ static int get_uid_gid(int flag, const char *string)
 {
 	struct passwd *pw_ent;
 	struct group *grp_ent;
-	static const char *msg;
+	const char *msg;
 
-	if (ENABLE_DEVFSD_VERBOSE)
-		msg = "user";
-
-	if (isdigit(string[0]) ||((string[0] == '-') && isdigit(string[1])))
+	if (isdigit(string[0]) || ((string[0] == '-') && isdigit(string[1])))
 		return atoi(string);
 
 	if (flag == UID && (pw_ent = getpwnam(string)) != NULL)
 		return pw_ent->pw_uid;
 
-	if (flag == GID && (grp_ent = getgrnam(string)) != NULL)
-		return grp_ent->gr_gid;
-	else if (ENABLE_DEVFSD_VERBOSE)
-		msg = "group";
+	if (ENABLE_DEVFSD_VERBOSE)
+		msg = "user";
+
+	if (flag == GID) {
+		if ((grp_ent = getgrnam(string)) != NULL)
+			return grp_ent->gr_gid;
+		if (ENABLE_DEVFSD_VERBOSE)
+			msg = "group";
+	}
 
 	if (ENABLE_DEVFSD_VERBOSE)
 		msg_logger(LOG_ERR, "unknown %s: %s, defaulting to %cid=0",  msg, string, msg[0]);
@@ -1140,19 +1202,19 @@ static void signal_handler(int sig)
 
 static const char *get_variable(const char *variable, void *info)
 {
-	static char sbuf[sizeof(int)*3 + 2]; /* sign and NUL */
 	static char *hostname;
 
 	struct get_variable_info *gv_info = info;
 	const char *field_names[] = {
-			"hostname", "mntpt", "devpath", "devname",
-			"uid", "gid", "mode", hostname, mount_point,
-			gv_info->devpath, gv_info->devname, NULL
+			"hostname", "mntpt", "devpath", "devname", "uid", "gid", "mode",
+			NULL, mount_point, gv_info->devpath, gv_info->devname, NULL
 	};
 	int i;
 
 	if (!hostname)
 		hostname = safe_gethostname();
+	field_names[7] = hostname;
+
 	/* index_in_str_array returns i>=0  */
 	i = index_in_str_array(field_names, variable);
 
@@ -1162,12 +1224,11 @@ static const char *get_variable(const char *variable, void *info)
 		return field_names[i + 7];
 
 	if (i == 4)
-		sprintf(sbuf, "%u", gv_info->info->uid);
-	else if (i == 5)
-		sprintf(sbuf, "%u", gv_info->info->gid);
-	else if (i == 6)
-		sprintf(sbuf, "%o", gv_info->info->mode);
-	return sbuf;
+		return auto_string(xasprintf("%u", gv_info->info->uid));
+	if (i == 5)
+		return auto_string(xasprintf("%u", gv_info->info->gid));
+	/* i == 6 */
+	return auto_string(xasprintf("%o", gv_info->info->mode));
 }   /*  End Function get_variable  */
 
 static void service(struct stat statbuf, char *path)
@@ -1403,7 +1464,6 @@ const char *get_old_name(const char *devname, unsigned int namelen,
 	int indexx;
 	const char *pty1;
 	const char *pty2;
-	size_t len;
 	/* 1 to 5  "scsi/" , 6 to 9 "ide/host", 10 sbp/, 11 vcc/, 12 pty/ */
 	static const char *const fmt[] = {
 		NULL ,
@@ -1423,12 +1483,11 @@ const char *get_old_name(const char *devname, unsigned int namelen,
 	};
 
 	for (trans = translate_table; trans->match != NULL; ++trans) {
-		len = strlen(trans->match);
-
-		if (strncmp(devname, trans->match, len) == 0) {
+		char *after_match = is_prefixed_with(devname, trans->match);
+		if (after_match) {
 			if (trans->format == NULL)
-				return devname + len;
-			sprintf(buffer, trans->format, devname + len);
+				return after_match;
+			sprintf(buffer, trans->format, after_match);
 			return buffer;
 		}
 	}

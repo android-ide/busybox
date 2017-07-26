@@ -247,7 +247,7 @@ static int apply_one_hunk(void)
 		// Figure out which line of hunk to compare with next.  (Skip lines
 		// of the hunk we'd be adding.)
 		while (plist && *plist->data == "+-"[reverse]) {
-			if (data && !strcmp(data, plist->data+1)) {
+			if (data && strcmp(data, plist->data+1) == 0) {
 				if (!backwarn) {
 					backwarn = TT.linenum;
 					if (option_mask32 & FLAG_IGNORE) {
@@ -290,12 +290,24 @@ static int apply_one_hunk(void)
 		// out of buffer.
 
 		for (;;) {
+			while (plist && *plist->data == "+-"[reverse]) {
+				if (strcmp(check->data, plist->data+1) == 0
+				 && !backwarn
+				) {
+					backwarn = TT.linenum;
+					if (option_mask32 & FLAG_IGNORE) {
+						dummy_revert = 1;
+						reverse ^= 1;
+					}
+				}
+				plist = plist->next;
+			}
 			if (!plist || strcmp(check->data, plist->data+1)) {
 				// Match failed.  Write out first line of buffered data and
 				// recheck remaining buffered data for a new match.
 
 				if (PATCH_DEBUG)
-					fdprintf(2, "NOT: %s\n", plist->data);
+					fdprintf(2, "NOT: %s\n", plist ? plist->data : "EOF");
 
 				TT.state = 3;
 				check = buf;
@@ -345,6 +357,8 @@ done:
 // state 1: Found +++ file indicator, look for @@
 // state 2: In hunk: counting initial context lines
 // state 3: In hunk: getting body
+// Like GNU patch, we don't require a --- line before the +++, and
+// also allow the --- after the +++ line.
 
 int patch_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int patch_main(int argc UNUSED_PARAM, char **argv)
@@ -369,10 +383,6 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 		if (argv[0] && argv[1]) {
 			xmove_fd(xopen_stdin(argv[1]), STDIN_FILENO);
 		}
-	}
-	if (argv[0]) {
-		oldname = xstrdup(argv[0]);
-		newname = xstrdup(argv[0]);
 	}
 
 	// Loop through the lines in the patch
@@ -412,7 +422,7 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 		}
 
 		// Open a new file?
-		if (!strncmp("--- ", patchline, 4) || !strncmp("+++ ", patchline, 4)) {
+		if (is_prefixed_with(patchline, "--- ") || is_prefixed_with(patchline, "+++ ")) {
 			char *s, **name = reverse ? &newname : &oldname;
 			int i;
 
@@ -444,7 +454,7 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 
 		// Start a new hunk?  Usually @@ -oldline,oldlen +newline,newlen @@
 		// but a missing ,value means the value is 1.
-		} else if (state == 1 && !strncmp("@@ -", patchline, 4)) {
+		} else if (state == 1 && is_prefixed_with(patchline, "@@ -")) {
 			int i;
 			char *s = patchline+4;
 
@@ -462,6 +472,14 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 			TT.context = 0;
 			state = 2;
 
+			// If the --- line is missing or malformed, either oldname
+			// or (for -R) newname could be NULL -- but not both.  Like
+			// GNU patch, proceed based on the +++ line, and avoid SEGVs.
+			if (!oldname)
+				oldname = xstrdup("MISSING_FILENAME");
+			if (!newname)
+				newname = xstrdup("MISSING_FILENAME");
+
 			// If this is the first hunk, open the file.
 			if (TT.filein == -1) {
 				int oldsum, newsum, empty = 0;
@@ -474,12 +492,12 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 
 				// We're deleting oldname if new file is /dev/null (before -p)
 				// or if new hunk is empty (zero context) after patching
-				if (!strcmp(name, "/dev/null") || !(reverse ? oldsum : newsum)) {
+				if (strcmp(name, "/dev/null") == 0 || !(reverse ? oldsum : newsum)) {
 					name = reverse ? newname : oldname;
-					empty++;
+					empty = 1;
 				}
 
-				// handle -p path truncation.
+				// Handle -p path truncation.
 				for (i = 0, s = name; *s;) {
 					if ((option_mask32 & FLAG_PATHLEN) && TT.prefix == i)
 						break;
@@ -490,6 +508,9 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 					i++;
 					name = s;
 				}
+				// If "patch FILE_TO_PATCH", completely ignore name from patch
+				if (argv[0])
+					name = argv[0];
 
 				if (empty) {
 					// File is empty after the patches have been applied
@@ -507,7 +528,7 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 					struct stat statbuf;
 
 					// If the old file was null, we're creating a new one.
-					if (!strcmp(oldname, "/dev/null") || !oldsum) {
+					if (strcmp(oldname, "/dev/null") == 0 || !oldsum) {
 						printf("creating %s\n", name);
 						s = strrchr(name, '/');
 						if (s) {

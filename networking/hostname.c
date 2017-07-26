@@ -10,6 +10,25 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 
+//config:config HOSTNAME
+//config:	bool "hostname"
+//config:	default y
+//config:	help
+//config:	  Show or set the system's host name.
+//config:
+//config:config DNSDOMAINNAME
+//config:	bool "dnsdomainname"
+//config:	default y
+//config:	help
+//config:	  Alias to "hostname -d".
+
+//                        APPLET_ODDNAME:name           main      location    suid_type     help
+//applet:IF_DNSDOMAINNAME(APPLET_ODDNAME(dnsdomainname, hostname, BB_DIR_BIN, BB_SUID_DROP, dnsdomainname))
+//applet:IF_HOSTNAME(APPLET(hostname, BB_DIR_BIN, BB_SUID_DROP))
+
+//kbuild: lib-$(CONFIG_HOSTNAME) += hostname.o
+//kbuild: lib-$(CONFIG_DNSDOMAINNAME) += hostname.o
+
 //usage:#define hostname_trivial_usage
 //usage:       "[OPTIONS] [HOSTNAME | -F FILE]"
 //usage:#define hostname_full_usage "\n\n"
@@ -106,7 +125,7 @@ int hostname_main(int argc UNUSED_PARAM, char **argv)
 		OPT_i = 0x4,
 		OPT_s = 0x8,
 		OPT_F = 0x10,
-		OPT_dfis = 0xf,
+		OPT_dfi = 0x7,
 	};
 
 	unsigned opts;
@@ -131,10 +150,14 @@ int hostname_main(int argc UNUSED_PARAM, char **argv)
 	opts = getopt32(argv, "dfisF:v", &hostname_str);
 	argv += optind;
 	buf = safe_gethostname();
-	if (applet_name[0] == 'd') /* dnsdomainname? */
-		opts = OPT_d;
+	if (ENABLE_DNSDOMAINNAME) {
+		if (!ENABLE_HOSTNAME || applet_name[0] == 'd') {
+			/* dnsdomainname */
+			opts = OPT_d;
+		}
+	}
 
-	if (opts & OPT_dfis) {
+	if (opts & OPT_dfi) {
 		/* Cases when we need full hostname (or its part) */
 		struct hostent *hp;
 		char *p;
@@ -159,6 +182,9 @@ int hostname_main(int argc UNUSED_PARAM, char **argv)
 				bb_putchar('\n');
 			}
 		}
+	} else if (opts & OPT_s) {
+		strchrnul(buf, '.')[0] = '\0';
+		puts(buf);
 	} else if (opts & OPT_F) {
 		/* Set the hostname */
 		do_sethostname(hostname_str, 1);

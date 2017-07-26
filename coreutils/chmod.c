@@ -9,6 +9,15 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config CHMOD
+//config:	bool "chmod"
+//config:	default y
+//config:	help
+//config:	  chmod is used to change the access permission of files.
+
+//applet:IF_CHMOD(APPLET_NOEXEC(chmod, chmod, BB_DIR_BIN, BB_SUID_DROP, chmod))
+
+//kbuild:lib-$(CONFIG_CHMOD) += chmod.o
 
 /* BB_AUDIT SUSv3 compliant */
 /* BB_AUDIT GNU defects - unsupported long options. */
@@ -69,9 +78,9 @@ static int FAST_FUNC fileAction(const char *fileName, struct stat *statbuf, void
 		if (S_ISLNK(statbuf->st_mode))
 			return TRUE;
 	}
-	newmode = statbuf->st_mode;
 
-	if (!bb_parse_mode((char *)param, &newmode))
+	newmode = bb_parse_mode((char *)param, statbuf->st_mode);
+	if (newmode == (mode_t)-1)
 		bb_error_msg_and_die("invalid mode '%s'", (char *)param);
 
 	if (chmod(fileName, newmode) == 0) {

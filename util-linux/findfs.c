@@ -7,6 +7,20 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config FINDFS
+//config:	bool "findfs"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	select VOLUMEID
+//config:	help
+//config:	  Prints the name of a filesystem with given label or UUID.
+//config:	  WARNING:
+//config:	  With all submodules selected, it will add ~8k to busybox.
+
+/* Benefits from suid root: better access to /dev/BLOCKDEVs: */
+//applet:IF_FINDFS(APPLET(findfs, BB_DIR_SBIN, BB_SUID_MAYBE))
+
+//kbuild:lib-$(CONFIG_FINDFS) += findfs.o
 
 //usage:#define findfs_trivial_usage
 //usage:       "LABEL=label or UUID=uuid"
@@ -27,7 +41,7 @@ int findfs_main(int argc UNUSED_PARAM, char **argv)
 	if (!dev)
 		bb_show_usage();
 
-	if (strncmp(dev, "/dev/", 5) == 0) {
+	if (is_prefixed_with(dev, "/dev/")) {
 		/* Just pass any /dev/xxx name right through.
 		 * This might aid in some scripts being able
 		 * to call this unconditionally */

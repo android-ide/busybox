@@ -11,6 +11,7 @@
  */
 
 #include "ip_common.h"  /* #include "libbb.h" is inside */
+#include "common_bufsiz.h"
 #include "rt_names.h"
 #include "utils.h"
 
@@ -27,7 +28,7 @@ struct filter_t {
 	int flushe;
 	struct rtnl_handle *rth;
 	//int protocol, protocolmask; - write-only fields?!
-	//int scope, scopemask; - unused
+	int scope, scopemask;
 	//int type; - read-only
 	//int typemask; - unused
 	//int tos, tosmask; - unused
@@ -43,7 +44,8 @@ struct filter_t {
 } FIX_ALIASING;
 typedef struct filter_t filter_t;
 
-#define G_filter (*(filter_t*)&bb_common_bufsiz1)
+#define G_filter (*(filter_t*)bb_common_bufsiz1)
+#define INIT_G() do { setup_common_bufsiz(); } while (0)
 
 static int flush_update(void)
 {
@@ -55,39 +57,16 @@ static int flush_update(void)
 	return 0;
 }
 
-static unsigned get_hz(void)
-{
-	static unsigned hz_internal;
-	FILE *fp;
-
-	if (hz_internal)
-		return hz_internal;
-
-	fp = fopen_for_read("/proc/net/psched");
-	if (fp) {
-		unsigned nom, denom;
-
-		if (fscanf(fp, "%*08x%*08x%08x%08x", &nom, &denom) == 2)
-			if (nom == 1000000)
-				hz_internal = denom;
-		fclose(fp);
-	}
-	if (!hz_internal)
-		hz_internal = sysconf(_SC_CLK_TCK);
-	return hz_internal;
-}
-
 static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 		struct nlmsghdr *n, void *arg UNUSED_PARAM)
 {
 	struct rtmsg *r = NLMSG_DATA(n);
 	int len = n->nlmsg_len;
 	struct rtattr *tb[RTA_MAX+1];
-	char abuf[256];
 	inet_prefix dst;
 	inet_prefix src;
 	int host_len = -1;
-	SPRINT_BUF(b1);
+	uint32_t tid;
 
 	if (n->nlmsg_type != RTM_NEWROUTE && n->nlmsg_type != RTM_DELROUTE) {
 		fprintf(stderr, "Not a route: %08x %08x %08x\n",
@@ -99,6 +78,14 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 	len -= NLMSG_LENGTH(sizeof(*r));
 	if (len < 0)
 		bb_error_msg_and_die("wrong nlmsg len %d", len);
+
+	memset(tb, 0, sizeof(tb));
+	parse_rtattr(tb, RTA_MAX, RTM_RTA(r), len);
+
+	if (tb[RTA_TABLE])
+		tid = *(uint32_t *)RTA_DATA(tb[RTA_TABLE]);
+	else
+		tid = r->rtm_table;
 
 	if (r->rtm_family == AF_INET6)
 		host_len = 128;
@@ -129,10 +116,12 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 			}
 		}
 	} else {
-		if (G_filter.tb > 0 && G_filter.tb != r->rtm_table) {
+		if (G_filter.tb > 0 && G_filter.tb != tid) {
 			return 0;
 		}
 	}
+	if ((G_filter.scope ^ r->rtm_scope) & G_filter.scopemask)
+		return 0;
 	if (G_filter.rdst.family
 	 && (r->rtm_family != G_filter.rdst.family || G_filter.rdst.bitlen > r->rtm_dst_len)
 	) {
@@ -158,10 +147,8 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 		return 0;
 	}
 
-	memset(tb, 0, sizeof(tb));
 	memset(&src, 0, sizeof(src));
 	memset(&dst, 0, sizeof(dst));
-	parse_rtattr(tb, RTA_MAX, RTM_RTA(r), len);
 
 	if (tb[RTA_SRC]) {
 		src.bitlen = r->rtm_src_len;
@@ -218,7 +205,7 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 
 		if (NLMSG_ALIGN(G_filter.flushp) + n->nlmsg_len > G_filter.flushe) {
 			if (flush_update())
-				bb_error_msg_and_die("flush");
+				xfunc_die();
 		}
 		fn = (void*)(G_filter.flushb + NLMSG_ALIGN(G_filter.flushp));
 		memcpy(fn, n, n->nlmsg_len);
@@ -236,22 +223,20 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 		printf("Deleted ");
 	}
 	if (r->rtm_type != RTN_UNICAST /* && !G_filter.type - always 0 */) {
-		printf("%s ", rtnl_rtntype_n2a(r->rtm_type, b1));
+		printf("%s ", rtnl_rtntype_n2a(r->rtm_type));
 	}
 
 	if (tb[RTA_DST]) {
 		if (r->rtm_dst_len != host_len) {
-			printf("%s/%u ", rt_addr_n2a(r->rtm_family,
-						RTA_DATA(tb[RTA_DST]),
-						abuf, sizeof(abuf)),
-					r->rtm_dst_len
-					);
+			printf("%s/%u ",
+				rt_addr_n2a(r->rtm_family, RTA_DATA(tb[RTA_DST])),
+				r->rtm_dst_len
+			);
 		} else {
 			printf("%s ", format_host(r->rtm_family,
 						RTA_PAYLOAD(tb[RTA_DST]),
-						RTA_DATA(tb[RTA_DST]),
-						abuf, sizeof(abuf))
-					);
+						RTA_DATA(tb[RTA_DST]))
+			);
 		}
 	} else if (r->rtm_dst_len) {
 		printf("0/%d ", r->rtm_dst_len);
@@ -260,17 +245,15 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 	}
 	if (tb[RTA_SRC]) {
 		if (r->rtm_src_len != host_len) {
-			printf("from %s/%u ", rt_addr_n2a(r->rtm_family,
-						RTA_DATA(tb[RTA_SRC]),
-						abuf, sizeof(abuf)),
-					r->rtm_src_len
-					);
+			printf("from %s/%u ",
+				rt_addr_n2a(r->rtm_family, RTA_DATA(tb[RTA_SRC])),
+				r->rtm_src_len
+			);
 		} else {
 			printf("from %s ", format_host(r->rtm_family,
 						RTA_PAYLOAD(tb[RTA_SRC]),
-						RTA_DATA(tb[RTA_SRC]),
-						abuf, sizeof(abuf))
-					);
+						RTA_DATA(tb[RTA_SRC]))
+			);
 		}
 	} else if (r->rtm_src_len) {
 		printf("from 0/%u ", r->rtm_src_len);
@@ -278,26 +261,46 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 	if (tb[RTA_GATEWAY] && G_filter.rvia.bitlen != host_len) {
 		printf("via %s ", format_host(r->rtm_family,
 					RTA_PAYLOAD(tb[RTA_GATEWAY]),
-					RTA_DATA(tb[RTA_GATEWAY]),
-					abuf, sizeof(abuf)));
+					RTA_DATA(tb[RTA_GATEWAY]))
+		);
 	}
 	if (tb[RTA_OIF]) {
 		printf("dev %s ", ll_index_to_name(*(int*)RTA_DATA(tb[RTA_OIF])));
 	}
+#if ENABLE_FEATURE_IP_RULE
+	if (tid && tid != RT_TABLE_MAIN && !G_filter.tb)
+		printf("table %s ", rtnl_rttable_n2a(tid));
+#endif
 
-	/* Todo: parse & show "proto kernel", "scope link" here */
+	/* Todo: parse & show "proto kernel" here */
+	if (!(r->rtm_flags & RTM_F_CLONED)) {
+		if ((r->rtm_scope != RT_SCOPE_UNIVERSE) && G_filter.scopemask != -1)
+			printf("scope %s ", rtnl_rtscope_n2a(r->rtm_scope));
+	}
 
 	if (tb[RTA_PREFSRC] && /*G_filter.rprefsrc.bitlen - always 0*/ 0 != host_len) {
 		/* Do not use format_host(). It is our local addr
 		   and symbolic name will not be useful.
 		 */
 		printf(" src %s ", rt_addr_n2a(r->rtm_family,
-					RTA_DATA(tb[RTA_PREFSRC]),
-					abuf, sizeof(abuf)));
+					RTA_DATA(tb[RTA_PREFSRC])));
 	}
 	if (tb[RTA_PRIORITY]) {
 		printf(" metric %d ", *(uint32_t*)RTA_DATA(tb[RTA_PRIORITY]));
 	}
+	if (r->rtm_flags & RTNH_F_DEAD) {
+		printf("dead ");
+	}
+	if (r->rtm_flags & RTNH_F_ONLINK) {
+		printf("onlink ");
+	}
+	if (r->rtm_flags & RTNH_F_PERVASIVE) {
+		printf("pervasive ");
+	}
+	if (r->rtm_flags & RTM_F_NOTIFY) {
+		printf("notify ");
+	}
+
 	if (r->rtm_family == AF_INET6) {
 		struct rta_cacheinfo *ci = NULL;
 		if (tb[RTA_CACHEINFO]) {
@@ -325,22 +328,39 @@ static int FAST_FUNC print_route(const struct sockaddr_nl *who UNUSED_PARAM,
 	return 0;
 }
 
+static int str_is_lock(const char *str)
+{
+	return strcmp(str, "lock") == 0;
+}
+
 /* Return value becomes exitcode. It's okay to not return at all */
 static int iproute_modify(int cmd, unsigned flags, char **argv)
 {
+	/* If you add stuff here, update iproute_full_usage */
 	static const char keywords[] ALIGN1 =
-		"src\0""via\0""mtu\0""lock\0""protocol\0"IF_FEATURE_IP_RULE("table\0")
-		"dev\0""oif\0""to\0""metric\0";
+		"src\0""via\0"
+		"mtu\0""advmss\0"
+		"scope\0""protocol\0"IF_FEATURE_IP_RULE("table\0")
+		"dev\0""oif\0""to\0""metric\0""onlink\0";
+#define keyword_via    (keywords       + sizeof("src"))
+#define keyword_mtu    (keyword_via    + sizeof("via"))
+#define keyword_advmss (keyword_mtu    + sizeof("mtu"))
+#define keyword_scope  (keyword_advmss + sizeof("advmss"))
+#define keyword_proto  (keyword_scope  + sizeof("scope"))
+#define keyword_table  (keyword_proto  + sizeof("protocol"))
 	enum {
 		ARG_src,
 		ARG_via,
-		ARG_mtu, PARM_lock,
+		ARG_mtu,
+		ARG_advmss,
+		ARG_scope,
 		ARG_protocol,
 IF_FEATURE_IP_RULE(ARG_table,)
 		ARG_dev,
 		ARG_oif,
 		ARG_to,
 		ARG_metric,
+		ARG_onlink,
 	};
 	enum {
 		gw_ok = 1 << 0,
@@ -359,6 +379,7 @@ IF_FEATURE_IP_RULE(ARG_table,)
 	unsigned mxlock = 0;
 	char *d = NULL;
 	smalluint ok = 0;
+	smalluint scope_ok = 0;
 	int arg;
 
 	memset(&req, 0, sizeof(req));
@@ -367,15 +388,17 @@ IF_FEATURE_IP_RULE(ARG_table,)
 	req.n.nlmsg_flags = NLM_F_REQUEST | flags;
 	req.n.nlmsg_type = cmd;
 	req.r.rtm_family = preferred_family;
-	if (RT_TABLE_MAIN) /* if it is zero, memset already did it */
+	if (RT_TABLE_MAIN != 0) /* if it is zero, memset already did it */
 		req.r.rtm_table = RT_TABLE_MAIN;
-	if (RT_SCOPE_NOWHERE)
+	if (RT_SCOPE_NOWHERE != 0)
 		req.r.rtm_scope = RT_SCOPE_NOWHERE;
 
 	if (cmd != RTM_DELROUTE) {
-		req.r.rtm_protocol = RTPROT_BOOT;
 		req.r.rtm_scope = RT_SCOPE_UNIVERSE;
-		req.r.rtm_type = RTN_UNICAST;
+		if (RTPROT_BOOT != 0)
+			req.r.rtm_protocol = RTPROT_BOOT;
+		if (RTN_UNICAST != 0)
+			req.r.rtm_type = RTN_UNICAST;
 	}
 
 	mxrta->rta_type = RTA_METRICS;
@@ -402,17 +425,33 @@ IF_FEATURE_IP_RULE(ARG_table,)
 		} else if (arg == ARG_mtu) {
 			unsigned mtu;
 			NEXT_ARG();
-			if (index_in_strings(keywords, *argv) == PARM_lock) {
+			if (str_is_lock(*argv)) {
 				mxlock |= (1 << RTAX_MTU);
 				NEXT_ARG();
 			}
-			mtu = get_unsigned(*argv, "mtu");
+			mtu = get_unsigned(*argv, keyword_mtu);
 			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_MTU, mtu);
+		} else if (arg == ARG_advmss) {
+			unsigned mss;
+			NEXT_ARG();
+			if (str_is_lock(*argv)) {
+				mxlock |= (1 << RTAX_ADVMSS);
+				NEXT_ARG();
+			}
+			mss = get_unsigned(*argv, keyword_advmss);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_ADVMSS, mss);
+		} else if (arg == ARG_scope) {
+			uint32_t scope;
+			NEXT_ARG();
+			if (rtnl_rtscope_a2n(&scope, *argv))
+				invarg_1_to_2(*argv, keyword_scope);
+			req.r.rtm_scope = scope;
+			scope_ok = 1;
 		} else if (arg == ARG_protocol) {
 			uint32_t prot;
 			NEXT_ARG();
 			if (rtnl_rtprot_a2n(&prot, *argv))
-				invarg(*argv, "protocol");
+				invarg_1_to_2(*argv, keyword_proto);
 			req.r.rtm_protocol = prot;
 			ok |= proto_ok;
 #if ENABLE_FEATURE_IP_RULE
@@ -420,17 +459,25 @@ IF_FEATURE_IP_RULE(ARG_table,)
 			uint32_t tid;
 			NEXT_ARG();
 			if (rtnl_rttable_a2n(&tid, *argv))
-				invarg(*argv, "table");
-			req.r.rtm_table = tid;
+				invarg_1_to_2(*argv, keyword_table);
+			if (tid < 256)
+				req.r.rtm_table = tid;
+			else {
+				req.r.rtm_table = RT_TABLE_UNSPEC;
+				addattr32(&req.n, sizeof(req), RTA_TABLE, tid);
+			}
 #endif
 		} else if (arg == ARG_dev || arg == ARG_oif) {
 			NEXT_ARG();
 			d = *argv;
 		} else if (arg == ARG_metric) {
+//TODO: "metric", "priority" and "preference" are synonyms
 			uint32_t metric;
 			NEXT_ARG();
 			metric = get_u32(*argv, "metric");
 			addattr32(&req.n, sizeof(req), RTA_PRIORITY, metric);
+		} else if (arg == ARG_onlink) {
+			req.r.rtm_flags |= RTNH_F_ONLINK;
 		} else {
 			int type;
 			inet_prefix dst;
@@ -459,6 +506,158 @@ IF_FEATURE_IP_RULE(ARG_table,)
 				addattr_l(&req.n, sizeof(req), RTA_DST, &dst.data, dst.bytelen);
 			}
 		}
+/* Other keywords recognized by iproute2-3.19.0: */
+#if 0
+		} else if (strcmp(*argv, "from") == 0) {
+			inet_prefix addr;
+			NEXT_ARG();
+			get_prefix(&addr, *argv, req.r.rtm_family);
+			if (req.r.rtm_family == AF_UNSPEC)
+				req.r.rtm_family = addr.family;
+			if (addr.bytelen)
+				addattr_l(&req.n, sizeof(req), RTA_SRC, &addr.data, addr.bytelen);
+			req.r.rtm_src_len = addr.bitlen;
+		} else if (strcmp(*argv, "tos") == 0 ||
+			   matches(*argv, "dsfield") == 0) {
+			__u32 tos;
+			NEXT_ARG();
+			if (rtnl_dsfield_a2n(&tos, *argv))
+				invarg("\"tos\" value is invalid\n", *argv);
+			req.r.rtm_tos = tos;
+		} else if (strcmp(*argv, "hoplimit") == 0) {
+			unsigned hoplimit;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_HOPLIMIT);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&hoplimit, *argv, 0))
+				invarg("\"hoplimit\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_HOPLIMIT, hoplimit);
+		} else if (matches(*argv, "reordering") == 0) {
+			unsigned reord;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_REORDERING);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&reord, *argv, 0))
+				invarg("\"reordering\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_REORDERING, reord);
+		} else if (strcmp(*argv, "rtt") == 0) {
+			unsigned rtt;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_RTT);
+				NEXT_ARG();
+			}
+			if (get_time_rtt(&rtt, *argv, &raw))
+				invarg("\"rtt\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_RTT,
+				(raw) ? rtt : rtt * 8);
+		} else if (strcmp(*argv, "rto_min") == 0) {
+			unsigned rto_min;
+			NEXT_ARG();
+			mxlock |= (1<<RTAX_RTO_MIN);
+			if (get_time_rtt(&rto_min, *argv, &raw))
+				invarg("\"rto_min\" value is invalid\n",
+				       *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_RTO_MIN,
+				      rto_min);
+		} else if (matches(*argv, "window") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_WINDOW);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&win, *argv, 0))
+				invarg("\"window\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_WINDOW, win);
+		} else if (matches(*argv, "cwnd") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_CWND);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&win, *argv, 0))
+				invarg("\"cwnd\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_CWND, win);
+		} else if (matches(*argv, "initcwnd") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_INITCWND);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&win, *argv, 0))
+				invarg("\"initcwnd\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_INITCWND, win);
+		} else if (matches(*argv, "initrwnd") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_INITRWND);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&win, *argv, 0))
+				invarg("\"initrwnd\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_INITRWND, win);
+		} else if (matches(*argv, "features") == 0) {
+			unsigned int features = 0;
+
+			while (argc > 0) {
+				NEXT_ARG();
+
+				if (strcmp(*argv, "ecn") == 0)
+					features |= RTAX_FEATURE_ECN;
+				else
+					invarg("\"features\" value not valid\n", *argv);
+				break;
+			}
+
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_FEATURES, features);
+		} else if (matches(*argv, "quickack") == 0) {
+			unsigned quickack;
+			NEXT_ARG();
+			if (get_unsigned(&quickack, *argv, 0))
+				invarg("\"quickack\" value is invalid\n", *argv);
+			if (quickack != 1 && quickack != 0)
+				invarg("\"quickack\" value should be 0 or 1\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_QUICKACK, quickack);
+		} else if (matches(*argv, "rttvar") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_RTTVAR);
+				NEXT_ARG();
+			}
+			if (get_time_rtt(&win, *argv, &raw))
+				invarg("\"rttvar\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_RTTVAR,
+				(raw) ? win : win * 4);
+		} else if (matches(*argv, "ssthresh") == 0) {
+			unsigned win;
+			NEXT_ARG();
+			if (strcmp(*argv, "lock") == 0) {
+				mxlock |= (1<<RTAX_SSTHRESH);
+				NEXT_ARG();
+			}
+			if (get_unsigned(&win, *argv, 0))
+				invarg("\"ssthresh\" value is invalid\n", *argv);
+			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_SSTHRESH, win);
+		} else if (matches(*argv, "realms") == 0) {
+			__u32 realm;
+			NEXT_ARG();
+			if (get_rt_realms(&realm, *argv))
+				invarg("\"realm\" value is invalid\n", *argv);
+			addattr32(&req.n, sizeof(req), RTA_FLOW, realm);
+		} else if (strcmp(*argv, "nexthop") == 0) {
+			nhs_ok = 1;
+			break;
+		}
+#endif
 		argv++;
 	}
 
@@ -482,20 +681,22 @@ IF_FEATURE_IP_RULE(ARG_table,)
 		addattr_l(&req.n, sizeof(req), RTA_METRICS, RTA_DATA(mxrta), RTA_PAYLOAD(mxrta));
 	}
 
-	if (req.r.rtm_type == RTN_LOCAL || req.r.rtm_type == RTN_NAT)
-		req.r.rtm_scope = RT_SCOPE_HOST;
-	else
-	if (req.r.rtm_type == RTN_BROADCAST
-	 || req.r.rtm_type == RTN_MULTICAST
-	 || req.r.rtm_type == RTN_ANYCAST
-	) {
-		req.r.rtm_scope = RT_SCOPE_LINK;
-	}
-	else if (req.r.rtm_type == RTN_UNICAST || req.r.rtm_type == RTN_UNSPEC) {
-		if (cmd == RTM_DELROUTE)
-			req.r.rtm_scope = RT_SCOPE_NOWHERE;
-		else if (!(ok & gw_ok))
+	if (!scope_ok) {
+		if (req.r.rtm_type == RTN_LOCAL || req.r.rtm_type == RTN_NAT)
+			req.r.rtm_scope = RT_SCOPE_HOST;
+		else
+		if (req.r.rtm_type == RTN_BROADCAST
+		 || req.r.rtm_type == RTN_MULTICAST
+		 || req.r.rtm_type == RTN_ANYCAST
+		) {
 			req.r.rtm_scope = RT_SCOPE_LINK;
+		}
+		else if (req.r.rtm_type == RTN_UNICAST || req.r.rtm_type == RTN_UNSPEC) {
+			if (cmd == RTM_DELROUTE)
+				req.r.rtm_scope = RT_SCOPE_NOWHERE;
+			else if (!(ok & gw_ok))
+				req.r.rtm_scope = RT_SCOPE_LINK;
+		}
 	}
 
 	if (req.r.rtm_family == AF_UNSPEC) {
@@ -566,10 +767,11 @@ static int iproute_list_or_flush(char **argv, int flush)
 	char *id = NULL;
 	char *od = NULL;
 	static const char keywords[] ALIGN1 =
+		/* If you add stuff here, update iproute_full_usage */
 		/* "ip route list/flush" parameters: */
 		"protocol\0" "dev\0"   "oif\0"   "iif\0"
 		"via\0"      "table\0" "cache\0"
-		"from\0"     "to\0"
+		"from\0"     "to\0"    "scope\0"
 		/* and possible further keywords */
 		"all\0"
 		"root\0"
@@ -580,7 +782,7 @@ static int iproute_list_or_flush(char **argv, int flush)
 	enum {
 		KW_proto, KW_dev,   KW_oif,  KW_iif,
 		KW_via,   KW_table, KW_cache,
-		KW_from,  KW_to,
+		KW_from,  KW_to,    KW_scope,
 		/* */
 		KW_all,
 		KW_root,
@@ -604,7 +806,7 @@ static int iproute_list_or_flush(char **argv, int flush)
 			//G_filter.protocolmask = -1;
 			if (rtnl_rtprot_a2n(&prot, *argv)) {
 				if (index_in_strings(keywords, *argv) != KW_all)
-					invarg(*argv, "protocol");
+					invarg_1_to_2(*argv, "protocol");
 				prot = 0;
 				//G_filter.protocolmask = 0;
 			}
@@ -629,16 +831,27 @@ static int iproute_list_or_flush(char **argv, int flush)
 #if ENABLE_FEATURE_IP_RULE
 				uint32_t tid;
 				if (rtnl_rttable_a2n(&tid, *argv))
-					invarg(*argv, "table");
+					invarg_1_to_2(*argv, "table");
 				G_filter.tb = tid;
 #else
-				invarg(*argv, "table");
+				invarg_1_to_2(*argv, "table");
 #endif
 			}
 		} else if (arg == KW_cache) {
 			/* The command 'ip route flush cache' is used by OpenSWAN.
 			 * Assuming it's a synonym for 'ip route flush table cache' */
 			G_filter.tb = -1;
+		} else if (arg == KW_scope) {
+			uint32_t scope;
+			NEXT_ARG();
+			G_filter.scopemask = -1;
+			if (rtnl_rtscope_a2n(&scope, *argv)) {
+				if (strcmp(*argv, "all") != 0)
+					invarg_1_to_2(*argv, "scope");
+				scope = RT_SCOPE_NOWHERE;
+				G_filter.scopemask = 0;
+			}
+			G_filter.scope = scope;
 		} else if (arg == KW_from) {
 			NEXT_ARG();
 			parm = index_in_substrings(keywords, *argv);
@@ -894,12 +1107,20 @@ static int iproute_get(char **argv)
 int FAST_FUNC do_iproute(char **argv)
 {
 	static const char ip_route_commands[] ALIGN1 =
-	/*0-3*/	"add\0""append\0""change\0""chg\0"
-	/*4-7*/	"delete\0""get\0""list\0""show\0"
-	/*8..*/	"prepend\0""replace\0""test\0""flush\0";
+		"a\0""add\0""append\0""change\0""chg\0"
+		"delete\0""get\0""list\0""show\0"
+		"prepend\0""replace\0""test\0""flush\0"
+	;
+	enum {
+		CMD_a = 0, CMD_add, CMD_append, CMD_change, CMD_chg,
+		CMD_delete, CMD_get, CMD_list, CMD_show,
+		CMD_prepend, CMD_replace, CMD_test, CMD_flush,
+	};
 	int command_num;
 	unsigned flags = 0;
 	int cmd = RTM_NEWROUTE;
+
+	INIT_G();
 
 	if (!*argv)
 		return iproute_list_or_flush(argv, 0);
@@ -909,38 +1130,39 @@ int FAST_FUNC do_iproute(char **argv)
 	command_num = index_in_substrings(ip_route_commands, *argv);
 
 	switch (command_num) {
-		case 0: /* add */
+		case CMD_a:
+		case CMD_add:
 			flags = NLM_F_CREATE|NLM_F_EXCL;
 			break;
-		case 1: /* append */
+		case CMD_append:
 			flags = NLM_F_CREATE|NLM_F_APPEND;
 			break;
-		case 2: /* change */
-		case 3: /* chg */
+		case CMD_change:
+		case CMD_chg:
 			flags = NLM_F_REPLACE;
 			break;
-		case 4: /* delete */
+		case CMD_delete:
 			cmd = RTM_DELROUTE;
 			break;
-		case 5: /* get */
-			return iproute_get(argv+1);
-		case 6: /* list */
-		case 7: /* show */
-			return iproute_list_or_flush(argv+1, 0);
-		case 8: /* prepend */
+		case CMD_get:
+			return iproute_get(argv + 1);
+		case CMD_list:
+		case CMD_show:
+			return iproute_list_or_flush(argv + 1, 0);
+		case CMD_prepend:
 			flags = NLM_F_CREATE;
 			break;
-		case 9: /* replace */
+		case CMD_replace:
 			flags = NLM_F_CREATE|NLM_F_REPLACE;
 			break;
-		case 10: /* test */
+		case CMD_test:
 			flags = NLM_F_EXCL;
 			break;
-		case 11: /* flush */
-			return iproute_list_or_flush(argv+1, 1);
+		case CMD_flush:
+			return iproute_list_or_flush(argv + 1, 1);
 		default:
-			bb_error_msg_and_die("unknown command %s", *argv);
+			invarg_1_to_2(*argv, applet_name);
 	}
 
-	return iproute_modify(cmd, flags, argv+1);
+	return iproute_modify(cmd, flags, argv + 1);
 }

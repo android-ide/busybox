@@ -7,6 +7,21 @@
  *
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
+//config:config CHCON
+//config:	bool "chcon"
+//config:	default n
+//config:	depends on SELINUX
+//config:	help
+//config:	  Enable support to change the security context of file.
+//config:
+//config:config FEATURE_CHCON_LONG_OPTIONS
+//config:	bool "Enable long options"
+//config:	default y
+//config:	depends on CHCON && LONG_OPTS
+
+//applet:IF_CHCON(APPLET(chcon, BB_DIR_USR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_CHCON) += chcon.o
 
 //usage:#define chcon_trivial_usage
 //usage:       "[OPTIONS] CONTEXT FILE..."
@@ -21,11 +36,11 @@
 //usage:     "\n	-c,--changes		Report changes made"
 //usage:     "\n	-h,--no-dereference	Affect symlinks instead of their targets"
 //usage:     "\n	-f,--silent,--quiet	Suppress most error messages"
-//usage:     "\n	--reference=RFILE	Use RFILE's group instead of using a CONTEXT value"
-//usage:     "\n	-u,--user=USER		Set user/role/type/range in the target"
-//usage:     "\n	-r,--role=ROLE		security context"
-//usage:     "\n	-t,--type=TYPE"
-//usage:     "\n	-l,--range=RANGE"
+//usage:     "\n	--reference RFILE	Use RFILE's group instead of using a CONTEXT value"
+//usage:     "\n	-u,--user USER		Set user/role/type/range in the target"
+//usage:     "\n	-r,--role ROLE		security context"
+//usage:     "\n	-t,--type TYPE"
+//usage:     "\n	-l,--range RANGE"
 //usage:     "\n	-R,--recursive		Recurse"
 //usage:	)
 //usage:	IF_NOT_FEATURE_CHCON_LONG_OPTIONS(

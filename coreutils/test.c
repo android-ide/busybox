@@ -19,11 +19,6 @@
  * Original copyright notice states:
  *     "This program is in the Public Domain."
  */
-
-//kbuild:lib-$(CONFIG_TEST)      += test.o test_ptr_hack.o
-//kbuild:lib-$(CONFIG_ASH)       += test.o test_ptr_hack.o
-//kbuild:lib-$(CONFIG_HUSH)      += test.o test_ptr_hack.o
-
 //config:config TEST
 //config:	bool "test"
 //config:	default y
@@ -32,21 +27,39 @@
 //config:	  returning an appropriate exit code. The bash shell
 //config:	  has test built in, ash can build it in optionally.
 //config:
+//config:config TEST1
+//config:	bool "test as ["
+//config:	default y
+//config:	help
+//config:	  Provide test command in the "[ EXPR ]" form
+//config:
+//config:config TEST2
+//config:	bool "test as [["
+//config:	default y
+//config:	help
+//config:	  Provide test command in the "[[ EXPR ]]" form
+//config:
 //config:config FEATURE_TEST_64
 //config:	bool "Extend test to 64 bit"
 //config:	default y
-//config:	depends on TEST || ASH_BUILTIN_TEST || HUSH
+//config:	depends on TEST || TEST1 || TEST2 || ASH_TEST || HUSH_TEST
 //config:	help
 //config:	  Enable 64-bit support in test.
 
-/* "test --help" does not print help (POSIX compat), only "[ --help" does.
- * We display "<applet> EXPRESSION ]" here (not "<applet> EXPRESSION")
- * Unfortunately, it screws up generated BusyBox.html. TODO. */
-//usage:#define test_trivial_usage
-//usage:       "EXPRESSION ]"
-//usage:#define test_full_usage "\n\n"
-//usage:       "Check file types, compare values etc. Return a 0/1 exit code\n"
-//usage:       "depending on logical value of EXPRESSION"
+//applet:IF_TEST(APPLET_NOFORK(test, test, BB_DIR_USR_BIN, BB_SUID_DROP, test))
+//applet:IF_TEST1(APPLET_NOFORK([,   test, BB_DIR_USR_BIN, BB_SUID_DROP, test))
+//applet:IF_TEST2(APPLET_NOFORK([[,  test, BB_DIR_USR_BIN, BB_SUID_DROP, test))
+
+//kbuild:lib-$(CONFIG_TEST)  += test.o test_ptr_hack.o
+//kbuild:lib-$(CONFIG_TEST1) += test.o test_ptr_hack.o
+//kbuild:lib-$(CONFIG_TEST2) += test.o test_ptr_hack.o
+
+//kbuild:lib-$(CONFIG_ASH_TEST)  += test.o test_ptr_hack.o
+//kbuild:lib-$(CONFIG_HUSH_TEST) += test.o test_ptr_hack.o
+
+/* "test --help" is special-cased to ignore --help */
+//usage:#define test_trivial_usage NOUSAGE_STR
+//usage:#define test_full_usage ""
 //usage:
 //usage:#define test_example_usage
 //usage:       "$ test 1 -eq 2\n"
@@ -399,6 +412,7 @@ extern struct test_statics *const test_ptr_to_statics;
 	barrier(); \
 } while (0)
 #define DEINIT_S() do { \
+	free(group_array); \
 	free(test_ptr_to_statics); \
 } while (0)
 
@@ -826,10 +840,11 @@ int test_main(int argc, char **argv)
 {
 	int res;
 	const char *arg0;
-//	bool negate = 0;
 
 	arg0 = bb_basename(argv[0]);
-	if (arg0[0] == '[') {
+	if ((ENABLE_TEST1 || ENABLE_TEST2 || ENABLE_ASH_TEST || ENABLE_HUSH_TEST)
+	 && (arg0[0] == '[')
+	) {
 		--argc;
 		if (!arg0[1]) { /* "[" ? */
 			if (NOT_LONE_CHAR(argv[argc], ']')) {
@@ -844,6 +859,7 @@ int test_main(int argc, char **argv)
 		}
 		argv[argc] = NULL;
 	}
+	/* argc is unused after this point */
 
 	/* We must do DEINIT_S() prior to returning */
 	INIT_S();
@@ -862,43 +878,45 @@ int test_main(int argc, char **argv)
 	 */
 	/*ngroups = 0; - done by INIT_S() */
 
-	//argc--;
 	argv++;
+	args = argv;
 
-	/* Implement special cases from POSIX.2, section 4.62.4 */
-	if (!argv[0]) { /* "test" */
-		res = 1;
-		goto ret;
-	}
-#if 0
-// Now it's fixed in the parser and should not be needed
-	if (LONE_CHAR(argv[0], '!') && argv[1]) {
-		negate = 1;
-		//argc--;
-		argv++;
-	}
-	if (!argv[1]) { /* "test [!] arg" */
-		res = (*argv[0] == '\0');
-		goto ret;
-	}
-	if (argv[2] && !argv[3]) {
-		check_operator(argv[1]);
-		if (last_operator->op_type == BINOP) {
-			/* "test [!] arg1 <binary_op> arg2" */
-			args = argv;
-			res = (binop() == 0);
-			goto ret;
+	/* Implement special cases from POSIX.2, section 4.62.4.
+	 * Testcase: "test '(' = '('"
+	 * The general parser would misinterpret '(' as group start.
+	 */
+	if (1) {
+		int negate = 0;
+ again:
+		if (!argv[0]) {
+			/* "test" */
+			res = 1;
+			goto ret_special;
+		}
+		if (!argv[1]) {
+			/* "test [!] arg" */
+			res = (argv[0][0] == '\0');
+			goto ret_special;
+		}
+		if (argv[2] && !argv[3]) {
+			check_operator(argv[1]);
+			if (last_operator->op_type == BINOP) {
+				/* "test [!] arg1 <binary_op> arg2" */
+				args = argv;
+				res = (binop() == 0);
+ ret_special:
+				/* If there was leading "!" op... */
+				res ^= negate;
+				goto ret;
+			}
+		}
+		if (LONE_CHAR(argv[0], '!')) {
+			argv++;
+			negate ^= 1;
+			goto again;
 		}
 	}
 
-	/* Some complex expression. Undo '!' removal */
-	if (negate) {
-		negate = 0;
-		//argc++;
-		argv--;
-	}
-#endif
-	args = argv;
 	res = !oexpr(check_operator(*args));
 
 	if (*args != NULL && *++args != NULL) {
@@ -911,6 +929,5 @@ int test_main(int argc, char **argv)
 	}
  ret:
 	DEINIT_S();
-//	return negate ? !res : res;
 	return res;
 }

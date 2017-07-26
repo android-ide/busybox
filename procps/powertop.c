@@ -18,6 +18,14 @@
 //config:	default y
 //config:	help
 //config:	  Analyze power consumption on Intel-based laptops
+//config:
+//config:config FEATURE_POWERTOP_INTERACTIVE
+//config:	bool "Accept keyboard commands"
+//config:	default y
+//config:	depends on POWERTOP
+//config:	help
+//config:	  Without this, powertop will only refresh display every 10 seconds.
+//config:	  No keyboard commands will work, only ^C to terminate.
 
 // XXX This should be configurable
 #define ENABLE_FEATURE_POWERTOP_PROCIRQ 1
@@ -82,7 +90,7 @@ struct globals {
 	ullong last_usage[MAX_CSTATE_COUNT];
 	ullong start_duration[MAX_CSTATE_COUNT];
 	ullong last_duration[MAX_CSTATE_COUNT];
-#if ENABLE_FEATURE_USE_TERMIOS
+#if ENABLE_FEATURE_POWERTOP_INTERACTIVE
 	struct termios init_settings;
 #endif
 };
@@ -91,7 +99,7 @@ struct globals {
 	SET_PTR_TO_GLOBALS(xzalloc(sizeof(G))); \
 } while (0)
 
-#if ENABLE_FEATURE_USE_TERMIOS
+#if ENABLE_FEATURE_POWERTOP_INTERACTIVE
 static void reset_term(void)
 {
 	tcsetattr_stdin_TCSANOW(&G.init_settings);
@@ -360,7 +368,7 @@ static void process_irq_counts(void)
 		}
 
 		name = p;
-		strchrnul(name, '\n')[0] = '\0';
+		chomp(p);
 		/* Save description of the interrupt */
 		if (nr >= 20000)
 			sprintf(irq_desc, "   <kernel IPI> : %s", name);
@@ -458,9 +466,9 @@ static NOINLINE int process_timer_stats(void)
 			//	func = "Load balancing tick";
 			//}
 
-			if (strncmp(func, "tick_nohz_", 10) == 0)
+			if (is_prefixed_with(func, "tick_nohz_"))
 				continue;
-			if (strncmp(func, "tick_setup_sched_timer", 20) == 0)
+			if (is_prefixed_with(func, "tick_setup_sched_timer"))
 				continue;
 			//if (strcmp(process, "powertop") == 0)
 			//	continue;
@@ -470,7 +478,7 @@ static NOINLINE int process_timer_stats(void)
 				process = idx < 2 ? "[kernel module]" : "<kernel core>";
 			}
 
-			strchrnul(p, '\n')[0] = '\0';
+			chomp(p);
 
 			// 46D\01136\0kondemand/1\0do_dbs_timer (delayed_work_timer_fn)
 			// ^          ^            ^
@@ -591,7 +599,7 @@ static NOINLINE void print_intel_cstates(void)
 	if (!edx || !(ecx & 1))
 		return;
 
-	printf("Your CPU supports the following C-states: ");
+	printf("Your %s the following C-states: ", "CPU supports");
 	i = 0;
 	while (edx) {
 		if (edx & 7)
@@ -602,7 +610,7 @@ static NOINLINE void print_intel_cstates(void)
 	bb_putchar('\n');
 
 	/* Print BIOS C-States */
-	printf("Your BIOS reports the following C-states: ");
+	printf("Your %s the following C-states: ", "BIOS reports");
 	for (i = 0; i < ARRAY_SIZE(bios_table); i++)
 		if (bios_table[i])
 			printf("C%u ", i);
@@ -627,7 +635,6 @@ static void show_timerstats(void)
 		int i, n = 0;
 		char strbuf6[6];
 
-		strbuf6[5] = '\0';
 		puts("\nTop causes for wakeups:");
 		for (i = 0; i < G.lines_cnt; i++) {
 			if ((G.lines[i].count > 0 /*|| G.lines[i].disk_count > 0*/)
@@ -639,7 +646,7 @@ static void show_timerstats(void)
 				/*char c = ' ';
 				if (G.lines[i].disk_count)
 					c = 'D';*/
-				smart_ulltoa5(G.lines[i].count, strbuf6, " KMGTPEZY");
+				smart_ulltoa5(G.lines[i].count, strbuf6, " KMGTPEZY")[0] = '\0';
 				printf(/*" %5.1f%% (%s)%c  %s\n"*/
 					" %5.1f%% (%s)   %s\n",
 					G.lines[i].count * 100.0 / G.lines_cumulative_count,
@@ -675,7 +682,7 @@ static void show_timerstats(void)
 //usage:#define powertop_trivial_usage
 //usage:       ""
 //usage:#define powertop_full_usage "\n\n"
-//usage:       "Analyze power consumption on Intel-based laptops\n"
+//usage:       "Analyze power consumption on Intel-based laptops"
 
 int powertop_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int powertop_main(int UNUSED_PARAM argc, char UNUSED_PARAM **argv)
@@ -683,8 +690,7 @@ int powertop_main(int UNUSED_PARAM argc, char UNUSED_PARAM **argv)
 	ullong cur_usage[MAX_CSTATE_COUNT];
 	ullong cur_duration[MAX_CSTATE_COUNT];
 	char cstate_lines[MAX_CSTATE_COUNT + 2][64];
-#if ENABLE_FEATURE_USE_TERMIOS
-	struct termios new_settings;
+#if ENABLE_FEATURE_POWERTOP_INTERACTIVE
 	struct pollfd pfd[1];
 
 	pfd[0].fd = 0;
@@ -705,17 +711,14 @@ int powertop_main(int UNUSED_PARAM argc, char UNUSED_PARAM **argv)
 	/* Get number of CPUs */
 	G.total_cpus = get_cpu_count();
 
-	printf("Collecting data for "DEFAULT_SLEEP_STR" seconds\n");
+	puts("Collecting data for "DEFAULT_SLEEP_STR" seconds");
 
-#if ENABLE_FEATURE_USE_TERMIOS
-	tcgetattr(0, (void *)&G.init_settings);
-	memcpy(&new_settings, &G.init_settings, sizeof(new_settings));
-	/* Turn on unbuffered input, turn off echoing */
-	new_settings.c_lflag &= ~(ISIG | ICANON | ECHO | ECHONL);
+#if ENABLE_FEATURE_POWERTOP_INTERACTIVE
+	/* Turn on unbuffered input; turn off echoing, ^C ^Z etc */
+	set_termios_to_raw(STDIN_FILENO, &G.init_settings, TERMIOS_CLEAR_ISIG);
+	bb_signals(BB_FATAL_SIGS, sig_handler);
 	/* So we don't forget to reset term settings */
 	atexit(reset_term);
-	bb_signals(BB_FATAL_SIGS, sig_handler);
-	tcsetattr_stdin_TCSANOW(&new_settings);
 #endif
 
 	/* Collect initial data */
@@ -740,7 +743,7 @@ int powertop_main(int UNUSED_PARAM argc, char UNUSED_PARAM **argv)
 		int i;
 
 		G.cant_enable_timer_stats |= start_timer(); /* 1 on error */
-#if !ENABLE_FEATURE_USE_TERMIOS
+#if !ENABLE_FEATURE_POWERTOP_INTERACTIVE
 		sleep(DEFAULT_SLEEP);
 #else
 		if (safe_poll(pfd, 1, DEFAULT_SLEEP * 1000) > 0) {

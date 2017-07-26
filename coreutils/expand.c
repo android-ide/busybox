@@ -8,18 +8,46 @@
  * David MacKenzie <djm@gnu.ai.mit.edu>
  *
  * Options for expand:
- * -t num  --tabs=NUM      Convert tabs to num spaces (default 8 spaces).
+ * -t num  --tabs NUM      Convert tabs to num spaces (default 8 spaces).
  * -i      --initial       Only convert initial tabs on each line to spaces.
  *
  * Options for unexpand:
  * -a      --all           Convert all blanks, instead of just initial blanks.
  * -f      --first-only    Convert only leading sequences of blanks (default).
- * -t num  --tabs=NUM      Have tabs num characters apart instead of 8.
+ * -t num  --tabs NUM      Have tabs num characters apart instead of 8.
  *
  *  Busybox version (C) 2007 by Tito Ragusa <farmatito@tiscali.it>
  *
  *  Caveat: this versions of expand and unexpand don't accept tab lists.
  */
+//config:config EXPAND
+//config:	bool "expand"
+//config:	default y
+//config:	help
+//config:	  By default, convert all tabs to spaces.
+//config:
+//config:config FEATURE_EXPAND_LONG_OPTIONS
+//config:	bool "Enable long options"
+//config:	default y
+//config:	depends on EXPAND && LONG_OPTS
+//config:
+//config:config UNEXPAND
+//config:	bool "unexpand"
+//config:	default y
+//config:	help
+//config:	  By default, convert only leading sequences of blanks to tabs.
+//config:
+//config:config FEATURE_UNEXPAND_LONG_OPTIONS
+//config:	bool "Enable long options"
+//config:	default y
+//config:	depends on UNEXPAND && LONG_OPTS
+
+//applet:IF_EXPAND(APPLET(expand, BB_DIR_USR_BIN, BB_SUID_DROP))
+//                   APPLET_ODDNAME:name      main    location        suid_type     help
+//applet:IF_UNEXPAND(APPLET_ODDNAME(unexpand, expand, BB_DIR_USR_BIN, BB_SUID_DROP, unexpand))
+
+//kbuild:lib-$(CONFIG_EXPAND) += expand.o
+//kbuild:lib-$(CONFIG_UNEXPAND) += expand.o
 
 //usage:#define expand_trivial_usage
 //usage:       "[-i] [-t N] [FILE]..."
@@ -27,7 +55,7 @@
 //usage:       "Convert tabs to spaces, writing to stdout\n"
 //usage:	IF_FEATURE_EXPAND_LONG_OPTIONS(
 //usage:     "\n	-i,--initial	Don't convert tabs after non blanks"
-//usage:     "\n	-t,--tabs=N	Tabstops every N chars"
+//usage:     "\n	-t,--tabs N	Tabstops every N chars"
 //usage:	)
 //usage:	IF_NOT_FEATURE_EXPAND_LONG_OPTIONS(
 //usage:     "\n	-i	Don't convert tabs after non blanks"
@@ -41,7 +69,7 @@
 //usage:	IF_FEATURE_UNEXPAND_LONG_OPTIONS(
 //usage:     "\n	-a,--all	Convert all blanks"
 //usage:     "\n	-f,--first-only	Convert only leading blanks"
-//usage:     "\n	-t,--tabs=N	Tabstops every N chars"
+//usage:     "\n	-t,--tabs N	Tabstops every N chars"
 //usage:	)
 //usage:	IF_NOT_FEATURE_UNEXPAND_LONG_OPTIONS(
 //usage:     "\n	-a	Convert all blanks"
@@ -78,11 +106,7 @@ static void expand(FILE *file, unsigned tab_size, unsigned opt)
 				unsigned len;
 				*ptr = '\0';
 # if ENABLE_UNICODE_SUPPORT
-				{
-					uni_stat_t uni_stat;
-					printable_string(&uni_stat, ptr_strbeg);
-					len = uni_stat.unicode_width;
-				}
+				len = unicode_strwidth(ptr_strbeg);
 # else
 				len = ptr - ptr_strbeg;
 # endif
@@ -138,12 +162,9 @@ static void unexpand(FILE *file, unsigned tab_size, unsigned opt)
 			printf("%*s%.*s", len, "", n, ptr);
 # if ENABLE_UNICODE_SUPPORT
 			{
-				char c;
-				uni_stat_t uni_stat;
-				c = ptr[n];
+				char c = ptr[n];
 				ptr[n] = '\0';
-				printable_string(&uni_stat, ptr);
-				len = uni_stat.unicode_width;
+				len = unicode_strwidth(ptr);
 				ptr[n] = c;
 			}
 # else

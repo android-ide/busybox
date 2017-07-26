@@ -7,6 +7,17 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config IPCRM
+//config:	bool "ipcrm"
+//config:	default y
+//config:	help
+//config:	  The ipcrm utility allows the removal of System V interprocess
+//config:	  communication (IPC) objects and the associated data structures
+//config:	  from the system.
+
+//applet:IF_IPCRM(APPLET(ipcrm, BB_DIR_USR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_IPCRM) += ipcrm.o
 
 //usage:#define ipcrm_trivial_usage
 //usage:       "[-MQS key] [-mqs id]"
@@ -119,7 +130,7 @@ int ipcrm_main(int argc, char **argv)
 
 			if (remove_ids(what, &argv[2]))
 				fflush_stdout_and_exit(EXIT_FAILURE);
-			printf("resource(s) deleted\n");
+			puts("resource(s) deleted");
 			return 0;
 		}
 	}

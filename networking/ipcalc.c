@@ -11,9 +11,33 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config IPCALC
+//config:	bool "ipcalc"
+//config:	default y
+//config:	help
+//config:	  ipcalc takes an IP address and netmask and calculates the
+//config:	  resulting broadcast, network, and host range.
+//config:
+//config:config FEATURE_IPCALC_LONG_OPTIONS
+//config:	bool "Enable long options"
+//config:	default y
+//config:	depends on IPCALC && LONG_OPTS
+//config:
+//config:config FEATURE_IPCALC_FANCY
+//config:	bool "Fancy IPCALC, more options, adds 1 kbyte"
+//config:	default y
+//config:	depends on IPCALC
+//config:	help
+//config:	  Adds the options hostname, prefix and silent to the output of
+//config:	  "ipcalc".
+
+//applet:IF_IPCALC(APPLET(ipcalc, BB_DIR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_IPCALC) += ipcalc.o
 
 //usage:#define ipcalc_trivial_usage
-//usage:       "[OPTIONS] ADDRESS[[/]NETMASK] [NETMASK]"
+//usage:       "[OPTIONS] ADDRESS"
+//usage:       IF_FEATURE_IPCALC_FANCY("[/PREFIX]") " [NETMASK]"
 //usage:#define ipcalc_full_usage "\n\n"
 //usage:       "Calculate IP network settings from a IP address\n"
 //usage:	IF_FEATURE_IPCALC_LONG_OPTIONS(

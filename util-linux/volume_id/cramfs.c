@@ -18,6 +18,13 @@
  *	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+//kbuild:lib-$(CONFIG_FEATURE_VOLUMEID_CRAMFS) += cramfs.o
+
+//config:config FEATURE_VOLUMEID_CRAMFS
+//config:	bool "cramfs filesystem"
+//config:	default y
+//config:	depends on VOLUMEID
+
 #include "volume_id_internal.h"
 
 struct cramfs_super {

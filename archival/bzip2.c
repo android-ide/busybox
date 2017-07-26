@@ -7,14 +7,43 @@
  * about bzip2 library code.
  */
 
+//config:config BZIP2
+//config:	bool "bzip2"
+//config:	default y
+//config:	help
+//config:	  bzip2 is a compression utility using the Burrows-Wheeler block
+//config:	  sorting text compression algorithm, and Huffman coding. Compression
+//config:	  is generally considerably better than that achieved by more
+//config:	  conventional LZ77/LZ78-based compressors, and approaches the
+//config:	  performance of the PPM family of statistical compressors.
+//config:
+//config:	  Unless you have a specific application which requires bzip2, you
+//config:	  should probably say N here.
+//config:
+//config:config FEATURE_BZIP2_DECOMPRESS
+//config:	bool "Enable decompression"
+//config:	default y
+//config:	depends on BZIP2 || BUNZIP2 || BZCAT
+//config:	help
+//config:	  Enable -d (--decompress) and -t (--test) options for bzip2.
+//config:	  This will be automatically selected if bunzip2 or bzcat is
+//config:	  enabled.
+
+//applet:IF_BZIP2(APPLET(bzip2, BB_DIR_USR_BIN, BB_SUID_DROP))
+//kbuild:lib-$(CONFIG_BZIP2) += bzip2.o
+
 //usage:#define bzip2_trivial_usage
 //usage:       "[OPTIONS] [FILE]..."
 //usage:#define bzip2_full_usage "\n\n"
 //usage:       "Compress FILEs (or stdin) with bzip2 algorithm\n"
 //usage:     "\n	-1..9	Compression level"
+//usage:	IF_FEATURE_BZIP2_DECOMPRESS(
 //usage:     "\n	-d	Decompress"
+//usage:     "\n	-t	Test file integrity"
+//usage:	)
 //usage:     "\n	-c	Write to stdout"
 //usage:     "\n	-f	Force"
+//usage:     "\n	-k	Keep input files"
 
 #include "libbb.h"
 #include "bb_archive.h"
@@ -111,7 +140,7 @@ IF_DESKTOP(long long) int bz_write(bz_stream *strm, void* rbuf, ssize_t rlen, vo
 }
 
 static
-IF_DESKTOP(long long) int FAST_FUNC compressStream(transformer_aux_data_t *aux UNUSED_PARAM)
+IF_DESKTOP(long long) int FAST_FUNC compressStream(transformer_state_t *xstate UNUSED_PARAM)
 {
 	IF_DESKTOP(long long) int total;
 	ssize_t count;
@@ -168,13 +197,13 @@ int bzip2_main(int argc UNUSED_PARAM, char **argv)
 
 	opt_complementary = "s2"; /* -s means -2 (compatibility) */
 	/* Must match bbunzip's constants OPT_STDOUT, OPT_FORCE! */
-	opt = getopt32(argv, "cfv" IF_BUNZIP2("dt") "123456789qzs");
-#if ENABLE_BUNZIP2 /* bunzip2_main may not be visible... */
-	if (opt & 0x18) // -d and/or -t
+	opt = getopt32(argv, "cfkv" IF_FEATURE_BZIP2_DECOMPRESS("dt") "123456789qzs");
+#if ENABLE_FEATURE_BZIP2_DECOMPRESS /* bunzip2_main may not be visible... */
+	if (opt & 0x30) // -d and/or -t
 		return bunzip2_main(argc, argv);
-	opt >>= 5;
+	opt >>= 6;
 #else
-	opt >>= 3;
+	opt >>= 4;
 #endif
 	opt = (uint8_t)opt; /* isolate bits for -1..-8 */
 	opt |= 0x100; /* if nothing else, assume -9 */
@@ -185,6 +214,6 @@ int bzip2_main(int argc UNUSED_PARAM, char **argv)
 	}
 
 	argv += optind;
-	option_mask32 &= 0x7; /* ignore all except -cfv */
+	option_mask32 &= 0xf; /* ignore all except -cfkv */
 	return bbunpack(argv, compressStream, append_ext, "bz2");
 }

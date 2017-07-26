@@ -5,7 +5,37 @@
  * Copyright (C) 2002 Robert Griebl <griebl@gmx.de>
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
-*/
+ */
+//config:config HWCLOCK
+//config:	bool "hwclock"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  The hwclock utility is used to read and set the hardware clock
+//config:	  on a system. This is primarily used to set the current time on
+//config:	  shutdown in the hardware clock, so the hardware will keep the
+//config:	  correct time when Linux is _not_ running.
+//config:
+//config:config FEATURE_HWCLOCK_LONG_OPTIONS
+//config:	bool "Support long options (--hctosys,...)"
+//config:	default y
+//config:	depends on HWCLOCK && LONG_OPTS
+//config:
+//config:config FEATURE_HWCLOCK_ADJTIME_FHS
+//config:	bool "Use FHS /var/lib/hwclock/adjtime"
+//config:	default n  # util-linux-ng in Fedora 13 still uses /etc/adjtime
+//config:	depends on HWCLOCK
+//config:	help
+//config:	  Starting with FHS 2.3, the adjtime state file is supposed to exist
+//config:	  at /var/lib/hwclock/adjtime instead of /etc/adjtime. If you wish
+//config:	  to use the FHS behavior, answer Y here, otherwise answer N for the
+//config:	  classic /etc/adjtime path.
+//config:
+//config:	  pathname.com/fhs/pub/fhs-2.3.html#VARLIBHWCLOCKSTATEDIRECTORYFORHWCLO
+
+//applet:IF_HWCLOCK(APPLET(hwclock, BB_DIR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_HWCLOCK) += hwclock.o
 
 #include "libbb.h"
 /* After libbb.h, since it needs sys/types.h on some systems */
@@ -69,7 +99,7 @@ static void show_clock(const char **pp_rtcname, int utc)
 	strftime(cp, sizeof(cp), "%c", ptm);
 #else
 	char *cp = ctime(&t);
-	strchrnul(cp, '\n')[0] = '\0';
+	chomp(cp);
 #endif
 
 #if !SHOW_HWCLOCK_DIFF
@@ -97,7 +127,11 @@ static void to_sys_clock(const char **pp_rtcname, int utc)
 	struct timeval tv;
 	struct timezone tz;
 
-	tz.tz_minuteswest = timezone/60 - 60*daylight;
+	tz.tz_minuteswest = timezone/60;
+	/* ^^^ used to also subtract 60*daylight, but it's wrong:
+	 * daylight!=0 means "this timezone has some DST
+	 * during the year", not "DST is in effect now".
+	 */
 	tz.tz_dsttime = 0;
 
 	tv.tv_sec = read_rtc(pp_rtcname, NULL, utc);
@@ -133,7 +167,7 @@ static void from_sys_clock(const char **pp_rtcname, int utc)
  * On x86, even though code does set hw clock within <1ms of exact
  * whole seconds, apparently hw clock (at least on some machines)
  * doesn't reset internal fractional seconds to 0,
- * making all this a pointless excercise.
+ * making all this a pointless exercise.
  */
 	/* If we see that we are N usec away from whole second,
 	 * we'll sleep for N-ADJ usecs. ADJ corrects for the fact
@@ -248,7 +282,7 @@ static void set_system_clock_timezone(int utc)
 	gettimeofday(&tv, NULL);
 	broken = localtime(&tv.tv_sec);
 	tz.tz_minuteswest = timezone / 60;
-	if (broken->tm_isdst)
+	if (broken->tm_isdst > 0)
 		tz.tz_minuteswest -= 60;
 	tz.tz_dsttime = 0;
 	gettimeofday(&tv, NULL);
@@ -305,6 +339,10 @@ int hwclock_main(int argc UNUSED_PARAM, char **argv)
 		;
 	applet_long_options = hwclock_longopts;
 #endif
+
+	/* Initialize "timezone" (libc global variable) */
+	tzset();
+
 	opt_complementary = "r--wst:w--rst:s--wrt:t--rsw:l--u:u--l";
 	opt = getopt32(argv, "lurswtf:", &rtcname);
 

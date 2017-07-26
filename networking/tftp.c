@@ -18,6 +18,76 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config TFTP
+//config:	bool "tftp"
+//config:	default y
+//config:	help
+//config:	  This enables the Trivial File Transfer Protocol client program. TFTP
+//config:	  is usually used for simple, small transfers such as a root image
+//config:	  for a network-enabled bootloader.
+//config:
+//config:config TFTPD
+//config:	bool "tftpd"
+//config:	default y
+//config:	help
+//config:	  This enables the Trivial File Transfer Protocol server program.
+//config:	  It expects that stdin is a datagram socket and a packet
+//config:	  is already pending on it. It will exit after one transfer.
+//config:	  In other words: it should be run from inetd in nowait mode,
+//config:	  or from udpsvd. Example: "udpsvd -E 0 69 tftpd DIR"
+//config:
+//config:comment "Common options for tftp/tftpd"
+//config:	depends on TFTP || TFTPD
+//config:
+//config:config FEATURE_TFTP_GET
+//config:	bool "Enable 'tftp get' and/or tftpd upload code"
+//config:	default y
+//config:	depends on TFTP || TFTPD
+//config:	help
+//config:	  Add support for the GET command within the TFTP client. This allows
+//config:	  a client to retrieve a file from a TFTP server.
+//config:	  Also enable upload support in tftpd, if tftpd is selected.
+//config:
+//config:	  Note: this option does _not_ make tftpd capable of download
+//config:	  (the usual operation people need from it)!
+//config:
+//config:config FEATURE_TFTP_PUT
+//config:	bool "Enable 'tftp put' and/or tftpd download code"
+//config:	default y
+//config:	depends on TFTP || TFTPD
+//config:	help
+//config:	  Add support for the PUT command within the TFTP client. This allows
+//config:	  a client to transfer a file to a TFTP server.
+//config:	  Also enable download support in tftpd, if tftpd is selected.
+//config:
+//config:config FEATURE_TFTP_BLOCKSIZE
+//config:	bool "Enable 'blksize' and 'tsize' protocol options"
+//config:	default y
+//config:	depends on TFTP || TFTPD
+//config:	help
+//config:	  Allow tftp to specify block size, and tftpd to understand
+//config:	  "blksize" and "tsize" options.
+//config:
+//config:config FEATURE_TFTP_PROGRESS_BAR
+//config:	bool "Enable progress bar"
+//config:	default y
+//config:	depends on TFTP && FEATURE_TFTP_BLOCKSIZE
+//config:
+//config:config TFTP_DEBUG
+//config:	bool "Enable debug"
+//config:	default n
+//config:	depends on TFTP || TFTPD
+//config:	help
+//config:	  Make tftp[d] print debugging messages on stderr.
+//config:	  This is useful if you are diagnosing a bug in tftp[d].
+
+//applet:#if ENABLE_FEATURE_TFTP_GET || ENABLE_FEATURE_TFTP_PUT
+//applet:IF_TFTP(APPLET(tftp, BB_DIR_USR_BIN, BB_SUID_DROP))
+//applet:IF_TFTPD(APPLET(tftpd, BB_DIR_USR_SBIN, BB_SUID_DROP))
+//applet:#endif
+
+//kbuild:lib-$(CONFIG_TFTP) += tftp.o
+//kbuild:lib-$(CONFIG_TFTPD) += tftp.o
 
 //usage:#define tftp_trivial_usage
 //usage:       "[OPTIONS] HOST [PORT]"
@@ -51,6 +121,7 @@
 //usage:     "\n	-l	Log to syslog (inetd mode requires this)"
 
 #include "libbb.h"
+#include "common_bufsiz.h"
 #include <syslog.h>
 
 #if ENABLE_FEATURE_TFTP_GET || ENABLE_FEATURE_TFTP_PUT
@@ -117,8 +188,10 @@ struct globals {
 	/* u16 TFTP_ERROR; u16 reason; both network-endian, then error text: */
 	uint8_t error_pkt[4 + 32];
 	struct passwd *pw;
-	/* used in tftpd_main(), a bit big for stack: */
-	char block_buf[TFTP_BLKSIZE_DEFAULT];
+	/* Used in tftpd_main() for initial packet */
+	/* Some HP PA-RISC firmware always sends fixed 516-byte requests */
+	char block_buf[516];
+	char block_buf_tail[1];
 #if ENABLE_FEATURE_TFTP_PROGRESS_BAR
 	off_t pos;
 	off_t size;
@@ -126,11 +199,11 @@ struct globals {
 	bb_progress_t pmt;
 #endif
 } FIX_ALIASING;
-#define G (*(struct globals*)&bb_common_bufsiz1)
-struct BUG_G_too_big {
-	char BUG_G_too_big[sizeof(G) <= COMMON_BUFSIZE ? 1 : -1];
-};
-#define INIT_G() do { } while (0)
+#define G (*(struct globals*)bb_common_bufsiz1)
+#define INIT_G() do { \
+	setup_common_bufsiz(); \
+	BUILD_BUG_ON(sizeof(G) > COMMON_BUFSIZE); \
+} while (0)
 
 #define G_error_pkt_reason (G.error_pkt[3])
 #define G_error_pkt_str    ((char*)(G.error_pkt + 4))
@@ -346,7 +419,6 @@ static int tftp_protocol(
 			 * as if it is "block 0" */
 			block_nr = 0;
 		}
-
 	} else { /* tftp */
 		/* Open file (must be after changing user) */
 		local_fd = CMD_GET(option_mask32) ? STDOUT_FILENO : STDIN_FILENO;
@@ -757,7 +829,8 @@ int tftpd_main(int argc UNUSED_PARAM, char **argv)
 {
 	len_and_sockaddr *our_lsa;
 	len_and_sockaddr *peer_lsa;
-	char *local_file, *mode, *user_opt;
+	char *mode, *user_opt;
+	char *local_file = local_file;
 	const char *error_msg;
 	int opt, result, opcode;
 	IF_FEATURE_TFTP_BLOCKSIZE(int blksize = TFTP_BLKSIZE_DEFAULT;)
@@ -793,14 +866,16 @@ int tftpd_main(int argc UNUSED_PARAM, char **argv)
 		xchroot(argv[0]);
 	}
 
-	result = recv_from_to(STDIN_FILENO, G.block_buf, sizeof(G.block_buf),
+	result = recv_from_to(STDIN_FILENO,
+			G.block_buf, sizeof(G.block_buf) + 1,
+			/* ^^^ sizeof+1 to reliably detect oversized input */
 			0 /* flags */,
 			&peer_lsa->u.sa, &our_lsa->u.sa, our_lsa->len);
 
 	error_msg = "malformed packet";
 	opcode = ntohs(*(uint16_t*)G.block_buf);
-	if (result < 4 || result >= sizeof(G.block_buf)
-	 || G.block_buf[result-1] != '\0'
+	if (result < 4 || result > sizeof(G.block_buf)
+	/*|| G.block_buf[result-1] != '\0' - bug compatibility, see below */
 	 || (IF_FEATURE_TFTP_PUT(opcode != TFTP_RRQ) /* not download */
 	     IF_GETPUT(&&)
 	     IF_FEATURE_TFTP_GET(opcode != TFTP_WRQ) /* not upload */
@@ -808,6 +883,13 @@ int tftpd_main(int argc UNUSED_PARAM, char **argv)
 	) {
 		goto err;
 	}
+	/* Some HP PA-RISC firmware always sends fixed 516-byte requests,
+	 * with trailing garbage.
+	 * Support that by not requiring NUL to be the last byte (see above).
+	 * To make strXYZ() ops safe, force NUL termination:
+	 */
+	G.block_buf_tail[0] = '\0';
+
 	local_file = G.block_buf + 2;
 	if (local_file[0] == '.' || strstr(local_file, "/.")) {
 		error_msg = "dot in file name";

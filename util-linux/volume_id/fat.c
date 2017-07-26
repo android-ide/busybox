@@ -18,6 +18,13 @@
  *	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+//kbuild:lib-$(CONFIG_FEATURE_VOLUMEID_FAT) += fat.o
+
+//config:config FEATURE_VOLUMEID_FAT
+//config:	bool "fat filesystem"
+//config:	default y
+//config:	depends on VOLUMEID
+
 #include "volume_id_internal.h"
 
 /* linux/msdos_fs.h says: */

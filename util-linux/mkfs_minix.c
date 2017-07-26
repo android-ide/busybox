@@ -62,6 +62,28 @@
  * Modified for BusyBox by Erik Andersen <andersen@debian.org> --
  *	removed getopt based parser and added a hand rolled one.
  */
+//config:config MKFS_MINIX
+//config:	bool "mkfs_minix"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  The minix filesystem is a nice, small, compact, read-write filesystem
+//config:	  with little overhead. If you wish to be able to create minix
+//config:	  filesystems this utility will do the job for you.
+//config:
+//config:config FEATURE_MINIX2
+//config:	bool "Support Minix fs v2 (fsck_minix/mkfs_minix)"
+//config:	default y
+//config:	depends on FSCK_MINIX || MKFS_MINIX
+//config:	help
+//config:	  If you wish to be able to create version 2 minix filesystems, enable
+//config:	  this. If you enabled 'mkfs_minix' then you almost certainly want to
+//config:	  be using the version 2 filesystem support.
+
+//                     APPLET_ODDNAME:name        main        location     suid_type     help
+//applet:IF_MKFS_MINIX(APPLET_ODDNAME(mkfs.minix, mkfs_minix, BB_DIR_SBIN, BB_SUID_DROP, mkfs_minix))
+
+//kbuild:lib-$(CONFIG_MKFS_MINIX) += mkfs_minix.o
 
 //usage:#define mkfs_minix_trivial_usage
 //usage:       "[-c | -l FILE] [-nXX] [-iXX] BLOCKDEV [KBYTES]"
@@ -195,54 +217,6 @@ static void minix_clrbit(char *a, unsigned i)
 #ifndef BLKGETSIZE
 # define BLKGETSIZE     _IO(0x12,96)    /* return device size */
 #endif
-
-
-static long valid_offset(int fd, int offset)
-{
-	char ch;
-
-	if (lseek(fd, offset, SEEK_SET) < 0)
-		return 0;
-	if (read(fd, &ch, 1) < 1)
-		return 0;
-	return 1;
-}
-
-static int count_blocks(int fd)
-{
-	int high, low;
-
-	low = 0;
-	for (high = 1; valid_offset(fd, high); high *= 2)
-		low = high;
-
-	while (low < high - 1) {
-		const int mid = (low + high) / 2;
-
-		if (valid_offset(fd, mid))
-			low = mid;
-		else
-			high = mid;
-	}
-	valid_offset(fd, 0);
-	return (low + 1);
-}
-
-static int get_size(const char *file)
-{
-	int fd;
-	long size;
-
-	fd = xopen(file, O_RDWR);
-	if (ioctl(fd, BLKGETSIZE, &size) >= 0) {
-		close(fd);
-		return (size * 512);
-	}
-
-	size = count_blocks(fd);
-	close(fd);
-	return size;
-}
 
 static void write_tables(void)
 {
@@ -553,7 +527,7 @@ static void get_list_blocks(char *filename)
 
 	listfile = xfopen_for_read(filename);
 	while (!feof(listfile)) {
-		fscanf(listfile, "%ld\n", &blockno);
+		fscanf(listfile, "%lu\n", &blockno);
 		mark_zone(blockno);
 		G.badblocks++;
 	}
@@ -624,11 +598,11 @@ static void setup_tables(void)
 	for (i = MINIX_ROOT_INO; i <= SB_INODES; i++)
 		unmark_inode(i);
 	G.inode_buffer = xzalloc(INODE_BUFFER_SIZE);
-	printf("%ld inodes\n", (long)SB_INODES);
-	printf("%ld blocks\n", (long)SB_ZONES);
-	printf("Firstdatazone=%ld (%ld)\n", (long)SB_FIRSTZONE, (long)norm_firstzone);
-	printf("Zonesize=%d\n", BLOCK_SIZE << SB_ZONE_SIZE);
-	printf("Maxsize=%ld\n", (long)SB_MAXSIZE);
+	printf("%lu inodes\n", (unsigned long)SB_INODES);
+	printf("%lu blocks\n", (unsigned long)SB_ZONES);
+	printf("Firstdatazone=%lu (%lu)\n", (unsigned long)SB_FIRSTZONE, (unsigned long)norm_firstzone);
+	printf("Zonesize=%u\n", BLOCK_SIZE << SB_ZONE_SIZE);
+	printf("Maxsize=%lu\n", (unsigned long)SB_MAXSIZE);
 }
 
 int mkfs_minix_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
@@ -636,7 +610,6 @@ int mkfs_minix_main(int argc UNUSED_PARAM, char **argv)
 {
 	unsigned opt;
 	char *tmp;
-	struct stat statbuf;
 	char *str_i;
 	char *listfile = NULL;
 
@@ -653,8 +626,7 @@ int mkfs_minix_main(int argc UNUSED_PARAM, char **argv)
 		bb_error_msg_and_die("bad inode size");
 #endif
 
-	opt_complementary = "n+"; /* -n N */
-	opt = getopt32(argv, "ci:l:n:v", &str_i, &listfile, &G.namelen);
+	opt = getopt32(argv, "ci:l:n:+v", &str_i, &listfile, &G.namelen);
 	argv += optind;
 	//if (opt & 1) -c
 	if (opt & 2) G.req_nr_inodes = xatoul(str_i); // -i
@@ -673,13 +645,17 @@ int mkfs_minix_main(int argc UNUSED_PARAM, char **argv)
 #endif
 	}
 
-	G.device_name = *argv++;
+	G.device_name = argv[0];
 	if (!G.device_name)
 		bb_show_usage();
-	if (*argv)
-		G.total_blocks = xatou32(*argv);
-	else
-		G.total_blocks = get_size(G.device_name) / 1024;
+
+	/* Check if it is mounted */
+	if (find_mount_point(G.device_name, 0))
+		bb_error_msg_and_die("can't format mounted filesystem");
+
+	xmove_fd(xopen(G.device_name, O_RDWR), dev_fd);
+
+	G.total_blocks = get_volume_size_in_bytes(dev_fd, argv[1], 1024, /*extend:*/ 1) / 1024;
 
 	if (G.total_blocks < 10)
 		bb_error_msg_and_die("must have at least 10 blocks");
@@ -690,25 +666,21 @@ int mkfs_minix_main(int argc UNUSED_PARAM, char **argv)
 			G.magic = MINIX2_SUPER_MAGIC;
 	} else if (G.total_blocks > 65535)
 		G.total_blocks = 65535;
-
-	/* Check if it is mounted */
-	if (find_mount_point(G.device_name, 0))
-		bb_error_msg_and_die("can't format mounted filesystem");
-
-	xmove_fd(xopen(G.device_name, O_RDWR), dev_fd);
+#if 0
+	struct stat statbuf;
 	xfstat(dev_fd, &statbuf, G.device_name);
+/* why? */
 	if (!S_ISBLK(statbuf.st_mode))
 		opt &= ~1; // clear -c (check)
-
+#if 0
 /* I don't know why someone has special code to prevent mkfs.minix
  * on IDE devices. Why IDE but not SCSI, etc?... */
-#if 0
 	else if (statbuf.st_rdev == 0x0300 || statbuf.st_rdev == 0x0340)
 		/* what is this? */
 		bb_error_msg_and_die("will not try "
 			"to make filesystem on '%s'", G.device_name);
 #endif
-
+#endif
 	tmp = G.root_block;
 	*(short *) tmp = 1;
 	strcpy(tmp + 2, ".");

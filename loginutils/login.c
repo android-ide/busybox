@@ -2,23 +2,76 @@
 /*
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config LOGIN
+//config:	bool "login"
+//config:	default y
+//config:	select FEATURE_SYSLOG
+//config:	help
+//config:	  login is used when signing onto a system.
+//config:
+//config:	  Note that Busybox binary must be setuid root for this applet to
+//config:	  work properly.
+//config:
+//config:config LOGIN_SESSION_AS_CHILD
+//config:	bool "Run logged in session in a child process"
+//config:	default y if PAM
+//config:	depends on LOGIN
+//config:	help
+//config:	  Run the logged in session in a child process.  This allows
+//config:	  login to clean up things such as utmp entries or PAM sessions
+//config:	  when the login session is complete.  If you use PAM, you
+//config:	  almost always would want this to be set to Y, else PAM session
+//config:	  will not be cleaned up.
+//config:
+//config:config LOGIN_SCRIPTS
+//config:	bool "Support login scripts"
+//config:	depends on LOGIN
+//config:	default y
+//config:	help
+//config:	  Enable this if you want login to execute $LOGIN_PRE_SUID_SCRIPT
+//config:	  just prior to switching from root to logged-in user.
+//config:
+//config:config FEATURE_NOLOGIN
+//config:	bool "Support /etc/nologin"
+//config:	default y
+//config:	depends on LOGIN
+//config:	help
+//config:	  The file /etc/nologin is used by (some versions of) login(1).
+//config:	  If it exists, non-root logins are prohibited.
+//config:
+//config:config FEATURE_SECURETTY
+//config:	bool "Support /etc/securetty"
+//config:	default y
+//config:	depends on LOGIN
+//config:	help
+//config:	  The file /etc/securetty is used by (some versions of) login(1).
+//config:	  The file contains the device names of tty lines (one per line,
+//config:	  without leading /dev/) on which root is allowed to login.
+
+//applet:/* Needs to be run by root or be suid root - needs to change uid and gid: */
+//applet:IF_LOGIN(APPLET(login, BB_DIR_BIN, BB_SUID_REQUIRE))
+
+//kbuild:lib-$(CONFIG_LOGIN) += login.o
 
 //usage:#define login_trivial_usage
 //usage:       "[-p] [-h HOST] [[-f] USER]"
 //usage:#define login_full_usage "\n\n"
 //usage:       "Begin a new session on the system\n"
 //usage:     "\n	-f	Don't authenticate (user already authenticated)"
-//usage:     "\n	-h	Name of the remote host"
+//usage:     "\n	-h HOST	Host user came from (for network logins)"
 //usage:     "\n	-p	Preserve environment"
 
 #include "libbb.h"
+#include "common_bufsiz.h"
 #include <syslog.h>
 #include <sys/resource.h>
 
 #if ENABLE_SELINUX
 # include <selinux/selinux.h>  /* for is_selinux_enabled()  */
 # include <selinux/get_context_list.h> /* for get_default_context() */
-# include <selinux/flask.h> /* for security class definitions  */
+# /* from deprecated <selinux/flask.h>: */
+# undef  SECCLASS_CHR_FILE
+# define SECCLASS_CHR_FILE 10
 #endif
 
 #if ENABLE_PAM
@@ -28,6 +81,49 @@
  * Apparently they like to confuse people. */
 # include <security/pam_appl.h>
 # include <security/pam_misc.h>
+
+# if 0
+/* This supposedly can be used to avoid double password prompt,
+ * if used instead of standard misc_conv():
+ *
+ * "When we want to authenticate first with local method and then with tacacs for example,
+ *  the password is asked for local method and if not good is asked a second time for tacacs.
+ *  So if we want to authenticate a user with tacacs, and the user exists localy, the password is
+ *  asked two times before authentication is accepted."
+ *
+ * However, code looks shaky. For example, why misc_conv() return value is ignored?
+ * Are msg[i] and resp[i] indexes handled correctly?
+ */
+static char *passwd = NULL;
+static int my_conv(int num_msg, const struct pam_message **msg,
+		struct pam_response **resp, void *data)
+{
+	int i;
+	for (i = 0; i < num_msg; i++) {
+		switch (msg[i]->msg_style) {
+		case PAM_PROMPT_ECHO_OFF:
+			if (passwd == NULL) {
+				misc_conv(num_msg, msg, resp, data);
+				passwd = xstrdup(resp[i]->resp);
+				return PAM_SUCCESS;
+			}
+
+			resp[0] = xzalloc(sizeof(struct pam_response));
+			resp[0]->resp = passwd;
+			passwd = NULL;
+			resp[0]->resp_retcode = PAM_SUCCESS;
+			resp[1] = NULL;
+			return PAM_SUCCESS;
+
+		default:
+			break;
+		}
+	}
+
+	return PAM_SUCCESS;
+}
+# endif
+
 static const struct pam_conv conv = {
 	misc_conv,
 	NULL
@@ -45,8 +141,8 @@ enum {
 struct globals {
 	struct termios tty_attrs;
 } FIX_ALIASING;
-#define G (*(struct globals*)&bb_common_bufsiz1)
-#define INIT_G() do { } while (0)
+#define G (*(struct globals*)bb_common_bufsiz1)
+#define INIT_G() do { setup_common_bufsiz(); } while (0)
 
 
 #if ENABLE_FEATURE_NOLOGIN
@@ -77,25 +173,6 @@ static void die_if_nologin(void)
 }
 #else
 # define die_if_nologin() ((void)0)
-#endif
-
-#if ENABLE_FEATURE_SECURETTY && !ENABLE_PAM
-static int check_securetty(const char *short_tty)
-{
-	char *buf = (char*)"/etc/securetty"; /* any non-NULL is ok */
-	parser_t *parser = config_open2("/etc/securetty", fopen_for_read);
-	while (config_read(parser, &buf, 1, 1, "# \t", PARSE_NORMAL)) {
-		if (strcmp(buf, short_tty) == 0)
-			break;
-		buf = NULL;
-	}
-	config_close(parser);
-	/* buf != NULL here if config file was not found, empty
-	 * or line was found which equals short_tty */
-	return buf != NULL;
-}
-#else
-static ALWAYS_INLINE int check_securetty(const char *short_tty UNUSED_PARAM) { return 1; }
 #endif
 
 #if ENABLE_SELINUX
@@ -409,7 +486,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 		if (opt & LOGIN_OPT_f)
 			break; /* -f USER: success without asking passwd */
 
-		if (pw->pw_uid == 0 && !check_securetty(short_tty))
+		if (pw->pw_uid == 0 && !is_tty_secure(short_tty))
 			goto auth_failed;
 
 		/* Don't check the password if password entry is empty (!) */
@@ -420,7 +497,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 		 * Note that reads (in no-echo mode) trash tty attributes.
 		 * If we get interrupted by SIGALRM, we need to restore attrs.
 		 */
-		if (correct_password(pw))
+		if (ask_and_check_password(pw) > 0)
 			break;
 #endif /* ENABLE_PAM */
  auth_failed:
@@ -454,7 +531,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 		else {
 			if (safe_waitpid(child_pid, NULL, 0) == -1)
 				bb_perror_msg("waitpid");
-			update_utmp(child_pid, DEAD_PROCESS, NULL, NULL, NULL);
+			update_utmp_DEAD_PROCESS(child_pid);
 		}
 		IF_PAM(login_pam_end(pamh);)
 		return 0;
@@ -489,7 +566,8 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 	}
 #endif
 
-	motd();
+	if (access(".hushlogin", F_OK) != 0)
+		motd();
 
 	if (pw->pw_uid == 0)
 		syslog(LOG_INFO, "root login%s", fromhost);
@@ -523,7 +601,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 	signal(SIGINT, SIG_DFL);
 
 	/* Exec login shell with no additional parameters */
-	run_shell(pw->pw_shell, 1, NULL, NULL);
+	run_shell(pw->pw_shell, 1, NULL);
 
 	/* return EXIT_FAILURE; - not reached */
 }

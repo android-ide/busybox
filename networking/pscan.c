@@ -5,6 +5,15 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
+//config:config PSCAN
+//config:	bool "pscan"
+//config:	default y
+//config:	help
+//config:	  Simple network port scanner.
+
+//applet:IF_PSCAN(APPLET(pscan, BB_DIR_USR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_PSCAN) += pscan.o
 
 //usage:#define pscan_trivial_usage
 //usage:       "[-cb] [-p MIN_PORT] [-P MAX_PORT] [-t TIMEOUT] [-T MIN_RTT] HOST"
@@ -157,7 +166,7 @@ int pscan_main(int argc UNUSED_PARAM, char **argv)
 	}
 	if (ENABLE_FEATURE_CLEAN_UP) free(lsap);
 
-	printf("%d closed, %d open, %d timed out (or blocked) ports\n",
+	printf("%u closed, %u open, %u timed out (or blocked) ports\n",
 					closed_ports,
 					open_ports,
 					nports - (closed_ports + open_ports));

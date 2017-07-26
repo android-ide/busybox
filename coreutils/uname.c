@@ -4,10 +4,6 @@
  *
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
-
-/* BB_AUDIT SUSv3 compliant */
-/* http://www.opengroup.org/onlinepubs/007904975/utilities/uname.html */
-
 /* Option		Example
  * -s, --sysname	SunOS
  * -n, --nodename	rocky8
@@ -37,7 +33,6 @@
  * -a, --all: all of the above, in the order shown.
  *      If -p or -i is not known, don't show them
  */
-
 /* Busyboxed by Erik Andersen
  *
  * Before 2003: Glenn McGrath and Manuel Novoa III
@@ -47,18 +42,40 @@
  * Jan 2009:
  *  Fix handling of -a to not print "unknown", add -o and -i support.
  */
+//config:config UNAME
+//config:	bool "uname"
+//config:	default y
+//config:	help
+//config:	  uname is used to print system information.
+//config:
+//config:config UNAME_OSNAME
+//config:	string "Operating system name"
+//config:	default "GNU/Linux"
+//config:	depends on UNAME
+//config:	help
+//config:	  Sets the operating system name reported by uname -o.  The
+//config:	  default is "GNU/Linux".
+
+//applet:IF_UNAME(APPLET(uname, BB_DIR_BIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_UNAME) += uname.o
+
+/* BB_AUDIT SUSv3 compliant */
+/* http://www.opengroup.org/onlinepubs/007904975/utilities/uname.html */
 
 //usage:#define uname_trivial_usage
-//usage:       "[-amnrspv]"
+//usage:       "[-amnrspvio]"
 //usage:#define uname_full_usage "\n\n"
 //usage:       "Print system information\n"
 //usage:     "\n	-a	Print all"
 //usage:     "\n	-m	The machine (hardware) type"
 //usage:     "\n	-n	Hostname"
-//usage:     "\n	-r	OS release"
-//usage:     "\n	-s	OS name (default)"
+//usage:     "\n	-r	Kernel release"
+//usage:     "\n	-s	Kernel name (default)"
 //usage:     "\n	-p	Processor type"
-//usage:     "\n	-v	OS version"
+//usage:     "\n	-v	Kernel version"
+//usage:     "\n	-i	The hardware platform"
+//usage:     "\n	-o	OS name"
 //usage:
 //usage:#define uname_example_usage
 //usage:       "$ uname -a\n"
@@ -72,7 +89,7 @@ typedef struct {
 	struct utsname name;
 	char processor[sizeof(((struct utsname*)NULL)->machine)];
 	char platform[sizeof(((struct utsname*)NULL)->machine)];
-	char os[sizeof("GNU/Linux")];
+	char os[sizeof(CONFIG_UNAME_OSNAME)];
 } uname_info_t;
 
 static const char options[] ALIGN1 = "snrvmpioa";
@@ -139,7 +156,7 @@ int uname_main(int argc UNUSED_PARAM, char **argv)
 #endif
 	strcpy(uname_info.processor, unknown_str);
 	strcpy(uname_info.platform, unknown_str);
-	strcpy(uname_info.os, "GNU/Linux");
+	strcpy(uname_info.os, CONFIG_UNAME_OSNAME);
 #if 0
 	/* Fedora does something like this */
 	strcpy(uname_info.processor, uname_info.name.machine);

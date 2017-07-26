@@ -9,6 +9,17 @@
 
 /* BB_AUDIT SUSv3 N/A */
 
+//config:config VCONFIG
+//config:	bool "vconfig"
+//config:	default y
+//config:	select PLATFORM_LINUX
+//config:	help
+//config:	  Creates, removes, and configures VLAN interfaces
+
+//applet:IF_VCONFIG(APPLET(vconfig, BB_DIR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_VCONFIG) += vconfig.o
+
 //usage:#define vconfig_trivial_usage
 //usage:       "COMMAND [OPTIONS]"
 //usage:#define vconfig_full_usage "\n\n"
@@ -127,7 +138,7 @@ int vconfig_main(int argc, char **argv)
 		/* I suppose one could try to combine some of the function calls below,
 		 * since ifr.u.flag, ifr.u.VID, and ifr.u.skb_priority are all same-sized
 		 * (unsigned) int members of a unions.  But because of the range checking,
-		 * doing so wouldn't save that much space and would also make maintainence
+		 * doing so wouldn't save that much space and would also make maintenance
 		 * more of a pain.
 		 */
 		if (ifr.cmd == SET_VLAN_FLAG_CMD) {

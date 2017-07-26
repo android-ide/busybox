@@ -9,6 +9,8 @@
 
 #include "libbb.h"
 
+#define NEED_SHA512 (ENABLE_SHA512SUM || ENABLE_USE_BB_CRYPT_SHA)
+
 /* gcc 4.2.1 optimizes rotr64 better with inline than with macro
  * (for rotX32, there is no difference). Why? My guess is that
  * macro requires clever common subexpression elimination heuristics
@@ -84,7 +86,7 @@ static void FAST_FUNC common64_end(md5_ctx_t *ctx, int swap_needed)
 			if (swap_needed)
 				t = bb_bswap_64(t);
 			/* wbuffer is suitably aligned for this */
-			*(uint64_t *) (&ctx->wbuffer[64 - 8]) = t;
+			*(bb__aliased_uint64_t *) (&ctx->wbuffer[64 - 8]) = t;
 		}
 		ctx->process_block(ctx);
 		if (remaining >= 8)
@@ -137,7 +139,7 @@ static void FAST_FUNC md5_process_block64(md5_ctx_t *ctx)
 #if MD5_SMALL > 0
 	/* Before we start, one word to the strange constants.
 	   They are defined in RFC 1321 as
-	   T[i] = (int)(4294967296.0 * fabs(sin(i))), i=1..64
+	   T[i] = (int)(2^32 * fabs(sin(i))), i=1..64
 	 */
 	static const uint32_t C_array[] = {
 		/* round 1 */
@@ -213,7 +215,7 @@ static void FAST_FUNC md5_process_block64(md5_ctx_t *ctx)
 		case 2:
 			temp += FH(B, C, D);
 			break;
-		case 3:
+		default: /* case 3 */
 			temp += FI(B, C, D);
 		}
 		temp += words[(int) (*pp++)] + *pc++;
@@ -277,10 +279,6 @@ static void FAST_FUNC md5_process_block64(md5_ctx_t *ctx)
 
 #else  /* MD5_SMALL == 0 or 1 */
 
-	uint32_t A_save = A;
-	uint32_t B_save = B;
-	uint32_t C_save = C;
-	uint32_t D_save = D;
 # if MD5_SMALL == 1
 	const uint32_t *pc;
 	const char *pp;
@@ -425,10 +423,10 @@ static void FAST_FUNC md5_process_block64(md5_ctx_t *ctx)
 # undef OP
 # endif
 	/* Add checksum to the starting values */
-	ctx->hash[0] = A_save + A;
-	ctx->hash[1] = B_save + B;
-	ctx->hash[2] = C_save + C;
-	ctx->hash[3] = D_save + D;
+	ctx->hash[0] += A;
+	ctx->hash[1] += B;
+	ctx->hash[2] += C;
+	ctx->hash[3] += D;
 #endif
 }
 #undef FF
@@ -460,7 +458,7 @@ void FAST_FUNC md5_hash(md5_ctx_t *ctx, const void *buffer, size_t len)
  * endian byte order, so that a byte-wise output yields to the wanted
  * ASCII representation of the message digest.
  */
-void FAST_FUNC md5_end(md5_ctx_t *ctx, void *resbuf)
+unsigned FAST_FUNC md5_end(md5_ctx_t *ctx, void *resbuf)
 {
 	/* MD5 stores total in LE, need to swap on BE arches: */
 	common64_end(ctx, /*swap_needed:*/ BB_BIG_ENDIAN);
@@ -474,6 +472,7 @@ void FAST_FUNC md5_end(md5_ctx_t *ctx, void *resbuf)
 	}
 
 	memcpy(resbuf, ctx->hash, sizeof(ctx->hash[0]) * 4);
+	return sizeof(ctx->hash[0]) * 4;
 }
 
 
@@ -568,48 +567,59 @@ static void FAST_FUNC sha1_process_block64(sha1_ctx_t *ctx)
  * are the most significant half of first 64 elements
  * of the same array.
  */
-static const uint64_t sha_K[80] = {
-	0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL,
-	0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
-	0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
-	0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
-	0xd807aa98a3030242ULL, 0x12835b0145706fbeULL,
-	0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
-	0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL,
-	0x9bdc06a725c71235ULL, 0xc19bf174cf692694ULL,
-	0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
-	0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL,
-	0x2de92c6f592b0275ULL, 0x4a7484aa6ea6e483ULL,
-	0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
-	0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL,
-	0xb00327c898fb213fULL, 0xbf597fc7beef0ee4ULL,
-	0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
-	0x06ca6351e003826fULL, 0x142929670a0e6e70ULL,
-	0x27b70a8546d22ffcULL, 0x2e1b21385c26c926ULL,
-	0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
-	0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL,
-	0x81c2c92e47edaee6ULL, 0x92722c851482353bULL,
-	0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
-	0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL,
-	0xd192e819d6ef5218ULL, 0xd69906245565a910ULL,
-	0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
-	0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL,
-	0x2748774cdf8eeb99ULL, 0x34b0bcb5e19b48a8ULL,
-	0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
-	0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL,
-	0x748f82ee5defb2fcULL, 0x78a5636f43172f60ULL,
-	0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
-	0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL,
-	0xbef9a3f7b2c67915ULL, 0xc67178f2e372532bULL,
-	0xca273eceea26619cULL, 0xd186b8c721c0c207ULL, /* [64]+ are used for sha512 only */
-	0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL,
-	0x06f067aa72176fbaULL, 0x0a637dc5a2c898a6ULL,
-	0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
-	0x28db77f523047d84ULL, 0x32caab7b40c72493ULL,
-	0x3c9ebe0a15c9bebcULL, 0x431d67c49c100d4cULL,
-	0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
-	0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
+#undef K
+#if NEED_SHA512
+typedef uint64_t sha_K_int;
+# define K(v) v
+#else
+typedef uint32_t sha_K_int;
+# define K(v) (uint32_t)(v >> 32)
+#endif
+static const sha_K_int sha_K[] = {
+	K(0x428a2f98d728ae22ULL), K(0x7137449123ef65cdULL),
+	K(0xb5c0fbcfec4d3b2fULL), K(0xe9b5dba58189dbbcULL),
+	K(0x3956c25bf348b538ULL), K(0x59f111f1b605d019ULL),
+	K(0x923f82a4af194f9bULL), K(0xab1c5ed5da6d8118ULL),
+	K(0xd807aa98a3030242ULL), K(0x12835b0145706fbeULL),
+	K(0x243185be4ee4b28cULL), K(0x550c7dc3d5ffb4e2ULL),
+	K(0x72be5d74f27b896fULL), K(0x80deb1fe3b1696b1ULL),
+	K(0x9bdc06a725c71235ULL), K(0xc19bf174cf692694ULL),
+	K(0xe49b69c19ef14ad2ULL), K(0xefbe4786384f25e3ULL),
+	K(0x0fc19dc68b8cd5b5ULL), K(0x240ca1cc77ac9c65ULL),
+	K(0x2de92c6f592b0275ULL), K(0x4a7484aa6ea6e483ULL),
+	K(0x5cb0a9dcbd41fbd4ULL), K(0x76f988da831153b5ULL),
+	K(0x983e5152ee66dfabULL), K(0xa831c66d2db43210ULL),
+	K(0xb00327c898fb213fULL), K(0xbf597fc7beef0ee4ULL),
+	K(0xc6e00bf33da88fc2ULL), K(0xd5a79147930aa725ULL),
+	K(0x06ca6351e003826fULL), K(0x142929670a0e6e70ULL),
+	K(0x27b70a8546d22ffcULL), K(0x2e1b21385c26c926ULL),
+	K(0x4d2c6dfc5ac42aedULL), K(0x53380d139d95b3dfULL),
+	K(0x650a73548baf63deULL), K(0x766a0abb3c77b2a8ULL),
+	K(0x81c2c92e47edaee6ULL), K(0x92722c851482353bULL),
+	K(0xa2bfe8a14cf10364ULL), K(0xa81a664bbc423001ULL),
+	K(0xc24b8b70d0f89791ULL), K(0xc76c51a30654be30ULL),
+	K(0xd192e819d6ef5218ULL), K(0xd69906245565a910ULL),
+	K(0xf40e35855771202aULL), K(0x106aa07032bbd1b8ULL),
+	K(0x19a4c116b8d2d0c8ULL), K(0x1e376c085141ab53ULL),
+	K(0x2748774cdf8eeb99ULL), K(0x34b0bcb5e19b48a8ULL),
+	K(0x391c0cb3c5c95a63ULL), K(0x4ed8aa4ae3418acbULL),
+	K(0x5b9cca4f7763e373ULL), K(0x682e6ff3d6b2b8a3ULL),
+	K(0x748f82ee5defb2fcULL), K(0x78a5636f43172f60ULL),
+	K(0x84c87814a1f0ab72ULL), K(0x8cc702081a6439ecULL),
+	K(0x90befffa23631e28ULL), K(0xa4506cebde82bde9ULL),
+	K(0xbef9a3f7b2c67915ULL), K(0xc67178f2e372532bULL),
+#if NEED_SHA512  /* [64]+ are used for sha512 only */
+	K(0xca273eceea26619cULL), K(0xd186b8c721c0c207ULL),
+	K(0xeada7dd6cde0eb1eULL), K(0xf57d4f7fee6ed178ULL),
+	K(0x06f067aa72176fbaULL), K(0x0a637dc5a2c898a6ULL),
+	K(0x113f9804bef90daeULL), K(0x1b710b35131c471bULL),
+	K(0x28db77f523047d84ULL), K(0x32caab7b40c72493ULL),
+	K(0x3c9ebe0a15c9bebcULL), K(0x431d67c49c100d4cULL),
+	K(0x4cc5d4becb3e42b6ULL), K(0x597f299cfc657e2aULL),
+	K(0x5fcb6fab3ad6faecULL), K(0x6c44198c4a475817ULL),
+#endif
 };
+#undef K
 
 #undef Ch
 #undef Maj
@@ -653,7 +663,7 @@ static void FAST_FUNC sha256_process_block64(sha256_ctx_t *ctx)
 		 * (I hope compiler is clever enough to just fetch
 		 * upper half)
 		 */
-		uint32_t K_t = sha_K[t] >> 32;
+		uint32_t K_t = NEED_SHA512 ? (sha_K[t] >> 32) : sha_K[t];
 		uint32_t T1 = h + S1(e) + Ch(e, f, g) + K_t + W[t];
 		uint32_t T2 = S0(a) + Maj(a, b, c);
 		h = g;
@@ -683,6 +693,7 @@ static void FAST_FUNC sha256_process_block64(sha256_ctx_t *ctx)
 	ctx->hash[7] += h;
 }
 
+#if NEED_SHA512
 static void FAST_FUNC sha512_process_block128(sha512_ctx_t *ctx)
 {
 	unsigned t;
@@ -744,7 +755,7 @@ static void FAST_FUNC sha512_process_block128(sha512_ctx_t *ctx)
 	ctx->hash[6] += g;
 	ctx->hash[7] += h;
 }
-
+#endif /* NEED_SHA512 */
 
 void FAST_FUNC sha1_begin(sha1_ctx_t *ctx)
 {
@@ -769,6 +780,7 @@ static const uint32_t init256[] = {
 	0x1f83d9ab,
 	0x5be0cd19,
 };
+#if NEED_SHA512
 static const uint32_t init512_lo[] = {
 	0,
 	0,
@@ -781,6 +793,7 @@ static const uint32_t init512_lo[] = {
 	0xfb41bd6b,
 	0x137e2179,
 };
+#endif /* NEED_SHA512 */
 
 /* Initialize structure containing state of computation.
    (FIPS 180-2:5.3.2)  */
@@ -791,6 +804,7 @@ void FAST_FUNC sha256_begin(sha256_ctx_t *ctx)
 	ctx->process_block = sha256_process_block64;
 }
 
+#if NEED_SHA512
 /* Initialize structure containing state of computation.
    (FIPS 180-2:5.3.3)  */
 void FAST_FUNC sha512_begin(sha512_ctx_t *ctx)
@@ -814,7 +828,7 @@ void FAST_FUNC sha512_hash(sha512_ctx_t *ctx, const void *buffer, size_t len)
 	ctx->total64[0] += len;
 	if (ctx->total64[0] < len)
 		ctx->total64[1]++;
-#if 0
+# if 0
 	remaining = 128 - bufpos;
 
 	/* Hash whole blocks */
@@ -829,7 +843,7 @@ void FAST_FUNC sha512_hash(sha512_ctx_t *ctx, const void *buffer, size_t len)
 
 	/* Save last, partial blosk */
 	memcpy(ctx->wbuffer + bufpos, buffer, len);
-#else
+# else
 	while (1) {
 		remaining = 128 - bufpos;
 		if (remaining > len)
@@ -847,11 +861,12 @@ void FAST_FUNC sha512_hash(sha512_ctx_t *ctx, const void *buffer, size_t len)
 		sha512_process_block128(ctx);
 		/*bufpos = 0; - already is */
 	}
-#endif
+# endif
 }
+#endif /* NEED_SHA512 */
 
 /* Used also for sha256 */
-void FAST_FUNC sha1_end(sha1_ctx_t *ctx, void *resbuf)
+unsigned FAST_FUNC sha1_end(sha1_ctx_t *ctx, void *resbuf)
 {
 	unsigned hash_size;
 
@@ -865,10 +880,13 @@ void FAST_FUNC sha1_end(sha1_ctx_t *ctx, void *resbuf)
 		for (i = 0; i < hash_size; ++i)
 			ctx->hash[i] = SWAP_BE32(ctx->hash[i]);
 	}
-	memcpy(resbuf, ctx->hash, sizeof(ctx->hash[0]) * hash_size);
+	hash_size *= sizeof(ctx->hash[0]);
+	memcpy(resbuf, ctx->hash, hash_size);
+	return hash_size;
 }
 
-void FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
+#if NEED_SHA512
+unsigned FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
 {
 	unsigned bufpos = ctx->total64[0] & 127;
 
@@ -883,10 +901,10 @@ void FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
 			uint64_t t;
 			t = ctx->total64[0] << 3;
 			t = SWAP_BE64(t);
-			*(uint64_t *) (&ctx->wbuffer[128 - 8]) = t;
+			*(bb__aliased_uint64_t *) (&ctx->wbuffer[128 - 8]) = t;
 			t = (ctx->total64[1] << 3) | (ctx->total64[0] >> 61);
 			t = SWAP_BE64(t);
-			*(uint64_t *) (&ctx->wbuffer[128 - 16]) = t;
+			*(bb__aliased_uint64_t *) (&ctx->wbuffer[128 - 16]) = t;
 		}
 		sha512_process_block128(ctx);
 		if (remaining >= 16)
@@ -900,7 +918,9 @@ void FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
 			ctx->hash[i] = SWAP_BE64(ctx->hash[i]);
 	}
 	memcpy(resbuf, ctx->hash, sizeof(ctx->hash));
+	return sizeof(ctx->hash);
 }
+#endif /* NEED_SHA512 */
 
 
 /*
@@ -926,9 +946,76 @@ void FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
 # define SHA3_SMALL CONFIG_SHA3_SMALL
 #endif
 
-enum {
-	SHA3_IBLK_BYTES = 72, /* 576 bits / 8 */
-};
+#define OPTIMIZE_SHA3_FOR_32 0
+/*
+ * SHA3 can be optimized for 32-bit CPUs with bit-slicing:
+ * every 64-bit word of state[] can be split into two 32-bit words
+ * by even/odd bits. In this form, all rotations of sha3 round
+ * are 32-bit - and there are lots of them.
+ * However, it requires either splitting/combining state words
+ * before/after sha3 round (code does this now)
+ * or shuffling bits before xor'ing them into state and in sha3_end.
+ * Without shuffling, bit-slicing results in -130 bytes of code
+ * and marginal speedup (but of course it gives wrong result).
+ * With shuffling it works, but +260 code bytes, and slower.
+ * Disabled for now:
+ */
+#if 0 /* LONG_MAX == 0x7fffffff */
+# undef OPTIMIZE_SHA3_FOR_32
+# define OPTIMIZE_SHA3_FOR_32 1
+#endif
+
+#if OPTIMIZE_SHA3_FOR_32
+/* This splits every 64-bit word into a pair of 32-bit words,
+ * even bits go into first word, odd bits go to second one.
+ * The conversion is done in-place.
+ */
+static void split_halves(uint64_t *state)
+{
+	/* Credit: Henry S. Warren, Hacker's Delight, Addison-Wesley, 2002 */
+	uint32_t *s32 = (uint32_t*)state;
+	uint32_t t, x0, x1;
+	int i;
+	for (i = 24; i >= 0; --i) {
+		x0 = s32[0];
+		t = (x0 ^ (x0 >> 1)) & 0x22222222; x0 = x0 ^ t ^ (t << 1);
+		t = (x0 ^ (x0 >> 2)) & 0x0C0C0C0C; x0 = x0 ^ t ^ (t << 2);
+		t = (x0 ^ (x0 >> 4)) & 0x00F000F0; x0 = x0 ^ t ^ (t << 4);
+		t = (x0 ^ (x0 >> 8)) & 0x0000FF00; x0 = x0 ^ t ^ (t << 8);
+		x1 = s32[1];
+		t = (x1 ^ (x1 >> 1)) & 0x22222222; x1 = x1 ^ t ^ (t << 1);
+		t = (x1 ^ (x1 >> 2)) & 0x0C0C0C0C; x1 = x1 ^ t ^ (t << 2);
+		t = (x1 ^ (x1 >> 4)) & 0x00F000F0; x1 = x1 ^ t ^ (t << 4);
+		t = (x1 ^ (x1 >> 8)) & 0x0000FF00; x1 = x1 ^ t ^ (t << 8);
+		*s32++ = (x0 & 0x0000FFFF) | (x1 << 16);
+		*s32++ = (x0 >> 16) | (x1 & 0xFFFF0000);
+	}
+}
+/* The reverse operation */
+static void combine_halves(uint64_t *state)
+{
+	uint32_t *s32 = (uint32_t*)state;
+	uint32_t t, x0, x1;
+	int i;
+	for (i = 24; i >= 0; --i) {
+		x0 = s32[0];
+		x1 = s32[1];
+		t = (x0 & 0x0000FFFF) | (x1 << 16);
+		x1 = (x0 >> 16) | (x1 & 0xFFFF0000);
+		x0 = t;
+		t = (x0 ^ (x0 >> 8)) & 0x0000FF00; x0 = x0 ^ t ^ (t << 8);
+		t = (x0 ^ (x0 >> 4)) & 0x00F000F0; x0 = x0 ^ t ^ (t << 4);
+		t = (x0 ^ (x0 >> 2)) & 0x0C0C0C0C; x0 = x0 ^ t ^ (t << 2);
+		t = (x0 ^ (x0 >> 1)) & 0x22222222; x0 = x0 ^ t ^ (t << 1);
+		*s32++ = x0;
+		t = (x1 ^ (x1 >> 8)) & 0x0000FF00; x1 = x1 ^ t ^ (t << 8);
+		t = (x1 ^ (x1 >> 4)) & 0x00F000F0; x1 = x1 ^ t ^ (t << 4);
+		t = (x1 ^ (x1 >> 2)) & 0x0C0C0C0C; x1 = x1 ^ t ^ (t << 2);
+		t = (x1 ^ (x1 >> 1)) & 0x22222222; x1 = x1 ^ t ^ (t << 1);
+		*s32++ = x1;
+	}
+}
+#endif
 
 /*
  * In the crypto literature this function is usually called Keccak-f().
@@ -937,12 +1024,179 @@ static void sha3_process_block72(uint64_t *state)
 {
 	enum { NROUNDS = 24 };
 
-	/* Elements should be 64-bit, but top half is always zero or 0x80000000.
-	 * We encode 63rd bits in a separate word below.
-	 * Same is true for 31th bits, which lets us use 16-bit table instead of 64-bit.
-	 * The speed penalty is lost in the noise.
-	 */
+#if OPTIMIZE_SHA3_FOR_32
+	/*
+	static const uint32_t IOTA_CONST_0[NROUNDS] = {
+		0x00000001UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000001UL,
+		0x00000000UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000001UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000000UL,
+		0x00000001UL,
+		0x00000000UL,
+		0x00000001UL,
+		0x00000000UL,
+	};
+	** bits are in lsb: 0101 0000 1111 0100 1111 0001
+	*/
+	uint32_t IOTA_CONST_0bits = (uint32_t)(0x0050f4f1);
+	static const uint32_t IOTA_CONST_1[NROUNDS] = {
+		0x00000000UL,
+		0x00000089UL,
+		0x8000008bUL,
+		0x80008080UL,
+		0x0000008bUL,
+		0x00008000UL,
+		0x80008088UL,
+		0x80000082UL,
+		0x0000000bUL,
+		0x0000000aUL,
+		0x00008082UL,
+		0x00008003UL,
+		0x0000808bUL,
+		0x8000000bUL,
+		0x8000008aUL,
+		0x80000081UL,
+		0x80000081UL,
+		0x80000008UL,
+		0x00000083UL,
+		0x80008003UL,
+		0x80008088UL,
+		0x80000088UL,
+		0x00008000UL,
+		0x80008082UL,
+	};
+
+	uint32_t *const s32 = (uint32_t*)state;
+	unsigned round;
+
+	split_halves(state);
+
+	for (round = 0; round < NROUNDS; round++) {
+		unsigned x;
+
+		/* Theta */
+		{
+			uint32_t BC[20];
+			for (x = 0; x < 10; ++x) {
+				BC[x+10] = BC[x] = s32[x]^s32[x+10]^s32[x+20]^s32[x+30]^s32[x+40];
+			}
+			for (x = 0; x < 10; x += 2) {
+				uint32_t ta, tb;
+				ta = BC[x+8] ^ rotl32(BC[x+3], 1);
+				tb = BC[x+9] ^ BC[x+2];
+				s32[x+0] ^= ta;
+				s32[x+1] ^= tb;
+				s32[x+10] ^= ta;
+				s32[x+11] ^= tb;
+				s32[x+20] ^= ta;
+				s32[x+21] ^= tb;
+				s32[x+30] ^= ta;
+				s32[x+31] ^= tb;
+				s32[x+40] ^= ta;
+				s32[x+41] ^= tb;
+			}
+		}
+		/* RhoPi */
+		{
+			uint32_t t0a,t0b, t1a,t1b;
+			t1a = s32[1*2+0];
+			t1b = s32[1*2+1];
+
+#define RhoPi(PI_LANE, ROT_CONST) \
+	t0a = s32[PI_LANE*2+0];\
+	t0b = s32[PI_LANE*2+1];\
+	if (ROT_CONST & 1) {\
+		s32[PI_LANE*2+0] = rotl32(t1b, ROT_CONST/2+1);\
+		s32[PI_LANE*2+1] = ROT_CONST == 1 ? t1a : rotl32(t1a, ROT_CONST/2+0);\
+	} else {\
+		s32[PI_LANE*2+0] = rotl32(t1a, ROT_CONST/2);\
+		s32[PI_LANE*2+1] = rotl32(t1b, ROT_CONST/2);\
+	}\
+	t1a = t0a; t1b = t0b;
+
+			RhoPi(10, 1)
+			RhoPi( 7, 3)
+			RhoPi(11, 6)
+			RhoPi(17,10)
+			RhoPi(18,15)
+			RhoPi( 3,21)
+			RhoPi( 5,28)
+			RhoPi(16,36)
+			RhoPi( 8,45)
+			RhoPi(21,55)
+			RhoPi(24, 2)
+			RhoPi( 4,14)
+			RhoPi(15,27)
+			RhoPi(23,41)
+			RhoPi(19,56)
+			RhoPi(13, 8)
+			RhoPi(12,25)
+			RhoPi( 2,43)
+			RhoPi(20,62)
+			RhoPi(14,18)
+			RhoPi(22,39)
+			RhoPi( 9,61)
+			RhoPi( 6,20)
+			RhoPi( 1,44)
+#undef RhoPi
+		}
+		/* Chi */
+		for (x = 0; x <= 40;) {
+			uint32_t BC0, BC1, BC2, BC3, BC4;
+			BC0 = s32[x + 0*2];
+			BC1 = s32[x + 1*2];
+			BC2 = s32[x + 2*2];
+			s32[x + 0*2] = BC0 ^ ((~BC1) & BC2);
+			BC3 = s32[x + 3*2];
+			s32[x + 1*2] = BC1 ^ ((~BC2) & BC3);
+			BC4 = s32[x + 4*2];
+			s32[x + 2*2] = BC2 ^ ((~BC3) & BC4);
+			s32[x + 3*2] = BC3 ^ ((~BC4) & BC0);
+			s32[x + 4*2] = BC4 ^ ((~BC0) & BC1);
+			x++;
+			BC0 = s32[x + 0*2];
+			BC1 = s32[x + 1*2];
+			BC2 = s32[x + 2*2];
+			s32[x + 0*2] = BC0 ^ ((~BC1) & BC2);
+			BC3 = s32[x + 3*2];
+			s32[x + 1*2] = BC1 ^ ((~BC2) & BC3);
+			BC4 = s32[x + 4*2];
+			s32[x + 2*2] = BC2 ^ ((~BC3) & BC4);
+			s32[x + 3*2] = BC3 ^ ((~BC4) & BC0);
+			s32[x + 4*2] = BC4 ^ ((~BC0) & BC1);
+			x += 9;
+		}
+		/* Iota */
+		s32[0] ^= IOTA_CONST_0bits & 1;
+		IOTA_CONST_0bits >>= 1;
+		s32[1] ^= IOTA_CONST_1[round];
+	}
+
+	combine_halves(state);
+#else
+	/* Native 64-bit algorithm */
 	static const uint16_t IOTA_CONST[NROUNDS] = {
+		/* Elements should be 64-bit, but top half is always zero
+		 * or 0x80000000. We encode 63rd bits in a separate word below.
+		 * Same is true for 31th bits, which lets us use 16-bit table
+		 * instead of 64-bit. The speed penalty is lost in the noise.
+		 */
 		0x0001,
 		0x8082,
 		0x808a,
@@ -983,7 +1237,7 @@ static void sha3_process_block72(uint64_t *state)
 	};
 	/*static const uint8_t MOD5[10] = { 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, };*/
 
-	unsigned x, y;
+	unsigned x;
 	unsigned round;
 
 	if (BB_BIG_ENDIAN) {
@@ -1045,22 +1299,62 @@ static void sha3_process_block72(uint64_t *state)
 			RhoPi_twice(20); RhoPi_twice(22);
 #undef RhoPi_twice
 		}
-
 		/* Chi */
-		for (y = 0; y <= 20; y += 5) {
+# if LONG_MAX > 0x7fffffff
+		for (x = 0; x <= 20; x += 5) {
 			uint64_t BC0, BC1, BC2, BC3, BC4;
-			BC0 = state[y + 0];
-			BC1 = state[y + 1];
-			BC2 = state[y + 2];
-			state[y + 0] = BC0 ^ ((~BC1) & BC2);
-			BC3 = state[y + 3];
-			state[y + 1] = BC1 ^ ((~BC2) & BC3);
-			BC4 = state[y + 4];
-			state[y + 2] = BC2 ^ ((~BC3) & BC4);
-			state[y + 3] = BC3 ^ ((~BC4) & BC0);
-			state[y + 4] = BC4 ^ ((~BC0) & BC1);
+			BC0 = state[x + 0];
+			BC1 = state[x + 1];
+			BC2 = state[x + 2];
+			state[x + 0] = BC0 ^ ((~BC1) & BC2);
+			BC3 = state[x + 3];
+			state[x + 1] = BC1 ^ ((~BC2) & BC3);
+			BC4 = state[x + 4];
+			state[x + 2] = BC2 ^ ((~BC3) & BC4);
+			state[x + 3] = BC3 ^ ((~BC4) & BC0);
+			state[x + 4] = BC4 ^ ((~BC0) & BC1);
 		}
-
+# else
+		/* Reduced register pressure version
+		 * for register-starved 32-bit arches
+		 * (i386: -95 bytes, and it is _faster_)
+		 */
+		for (x = 0; x <= 40;) {
+			uint32_t BC0, BC1, BC2, BC3, BC4;
+			uint32_t *const s32 = (uint32_t*)state;
+#  if SHA3_SMALL
+ do_half:
+#  endif
+			BC0 = s32[x + 0*2];
+			BC1 = s32[x + 1*2];
+			BC2 = s32[x + 2*2];
+			s32[x + 0*2] = BC0 ^ ((~BC1) & BC2);
+			BC3 = s32[x + 3*2];
+			s32[x + 1*2] = BC1 ^ ((~BC2) & BC3);
+			BC4 = s32[x + 4*2];
+			s32[x + 2*2] = BC2 ^ ((~BC3) & BC4);
+			s32[x + 3*2] = BC3 ^ ((~BC4) & BC0);
+			s32[x + 4*2] = BC4 ^ ((~BC0) & BC1);
+			x++;
+#  if SHA3_SMALL
+			if (x & 1)
+				goto do_half;
+			x += 8;
+#  else
+			BC0 = s32[x + 0*2];
+			BC1 = s32[x + 1*2];
+			BC2 = s32[x + 2*2];
+			s32[x + 0*2] = BC0 ^ ((~BC1) & BC2);
+			BC3 = s32[x + 3*2];
+			s32[x + 1*2] = BC1 ^ ((~BC2) & BC3);
+			BC4 = s32[x + 4*2];
+			s32[x + 2*2] = BC2 ^ ((~BC3) & BC4);
+			s32[x + 3*2] = BC3 ^ ((~BC4) & BC0);
+			s32[x + 4*2] = BC4 ^ ((~BC0) & BC1);
+			x += 9;
+#  endif
+		}
+# endif /* long is 32-bit */
 		/* Iota */
 		state[0] ^= IOTA_CONST[round]
 			| (uint32_t)((IOTA_CONST_bit31 << round) & 0x80000000)
@@ -1072,11 +1366,14 @@ static void sha3_process_block72(uint64_t *state)
 			state[x] = SWAP_LE64(state[x]);
 		}
 	}
+#endif
 }
 
 void FAST_FUNC sha3_begin(sha3_ctx_t *ctx)
 {
 	memset(ctx, 0, sizeof(*ctx));
+	/* SHA3-512, user can override */
+	ctx->input_block_bytes = (1600 - 512*2) / 8; /* 72 bytes */
 }
 
 void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
@@ -1086,7 +1383,7 @@ void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
 	unsigned bufpos = ctx->bytes_queued;
 
 	while (1) {
-		unsigned remaining = SHA3_IBLK_BYTES - bufpos;
+		unsigned remaining = ctx->input_block_bytes - bufpos;
 		if (remaining > len)
 			remaining = len;
 		len -= remaining;
@@ -1098,38 +1395,41 @@ void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
 			remaining--;
 		}
 		/* Clever way to do "if (bufpos != N) break; ... ; bufpos = 0;" */
-		bufpos -= SHA3_IBLK_BYTES;
+		bufpos -= ctx->input_block_bytes;
 		if (bufpos != 0)
 			break;
 		/* Buffer is filled up, process it */
 		sha3_process_block72(ctx->state);
 		/*bufpos = 0; - already is */
 	}
-	ctx->bytes_queued = bufpos + SHA3_IBLK_BYTES;
+	ctx->bytes_queued = bufpos + ctx->input_block_bytes;
 #else
 	/* +50 bytes code size, but a bit faster because of long-sized XORs */
 	const uint8_t *data = buffer;
 	unsigned bufpos = ctx->bytes_queued;
+	unsigned iblk_bytes = ctx->input_block_bytes;
 
 	/* If already data in queue, continue queuing first */
-	while (len != 0 && bufpos != 0) {
-		uint8_t *buf = (uint8_t*)ctx->state;
-		buf[bufpos] ^= *data++;
-		len--;
-		bufpos++;
-		if (bufpos == SHA3_IBLK_BYTES) {
-			bufpos = 0;
-			goto do_block;
+	if (bufpos != 0) {
+		while (len != 0) {
+			uint8_t *buf = (uint8_t*)ctx->state;
+			buf[bufpos] ^= *data++;
+			len--;
+			bufpos++;
+			if (bufpos == iblk_bytes) {
+				bufpos = 0;
+				goto do_block;
+			}
 		}
 	}
 
 	/* Absorb complete blocks */
-	while (len >= SHA3_IBLK_BYTES) {
+	while (len >= iblk_bytes) {
 		/* XOR data onto beginning of state[].
 		 * We try to be efficient - operate one word at a time, not byte.
 		 * Careful wrt unaligned access: can't just use "*(long*)data"!
 		 */
-		unsigned count = SHA3_IBLK_BYTES / sizeof(long);
+		unsigned count = iblk_bytes / sizeof(long);
 		long *buf = (long*)ctx->state;
 		do {
 			long v;
@@ -1137,7 +1437,7 @@ void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
 			*buf++ ^= v;
 			data += sizeof(long);
 		} while (--count);
-		len -= SHA3_IBLK_BYTES;
+		len -= iblk_bytes;
  do_block:
 		sha3_process_block72(ctx->state);
 	}
@@ -1154,15 +1454,30 @@ void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
 #endif
 }
 
-void FAST_FUNC sha3_end(sha3_ctx_t *ctx, void *resbuf)
+unsigned FAST_FUNC sha3_end(sha3_ctx_t *ctx, void *resbuf)
 {
 	/* Padding */
 	uint8_t *buf = (uint8_t*)ctx->state;
-	buf[ctx->bytes_queued]   ^= 1;
-	buf[SHA3_IBLK_BYTES - 1] ^= 0x80;
+	/*
+	 * Keccak block padding is: add 1 bit after last bit of input,
+	 * then add zero bits until the end of block, and add the last 1 bit
+	 * (the last bit in the block) - the "10*1" pattern.
+	 * SHA3 standard appends additional two bits, 01,  before that padding:
+	 *
+	 * SHA3-224(M) = KECCAK[448](M||01, 224)
+	 * SHA3-256(M) = KECCAK[512](M||01, 256)
+	 * SHA3-384(M) = KECCAK[768](M||01, 384)
+	 * SHA3-512(M) = KECCAK[1024](M||01, 512)
+	 * (M is the input, || is bit concatenation)
+	 *
+	 * The 6 below contains 01 "SHA3" bits and the first 1 "Keccak" bit:
+	 */
+	buf[ctx->bytes_queued]          ^= 6; /* bit pattern 00000110 */
+	buf[ctx->input_block_bytes - 1] ^= 0x80;
 
 	sha3_process_block72(ctx->state);
 
 	/* Output */
 	memcpy(resbuf, ctx->state, 64);
+	return 64;
 }

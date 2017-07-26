@@ -9,6 +9,9 @@
  *                   Netbeat AG
  * Upstream has GPL v2 or later
  */
+//applet:IF_DHCPRELAY(APPLET(dhcprelay, BB_DIR_USR_SBIN, BB_SUID_DROP))
+
+//kbuild:lib-$(CONFIG_DHCPRELAY) += dhcprelay.o
 
 //usage:#define dhcprelay_trivial_usage
 //usage:       "CLIENT_IFACE[,CLIENT_IFACE2]... SERVER_IFACE [SERVER_IP]"
@@ -33,7 +36,8 @@ struct xid_item {
 	struct xid_item *next;
 } FIX_ALIASING;
 
-#define dhcprelay_xid_list (*(struct xid_item*)&bb_common_bufsiz1)
+#define dhcprelay_xid_list (*(struct xid_item*)bb_common_bufsiz1)
+#define INIT_G() do { setup_common_bufsiz(); } while (0)
 
 static struct xid_item *xid_add(uint32_t xid, struct sockaddr_in *ip, int client)
 {
@@ -257,6 +261,8 @@ int dhcprelay_main(int argc, char **argv)
 	int num_sockets, max_socket;
 	uint32_t our_nip;
 
+	INIT_G();
+
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 	server_addr.sin_port = htons(SERVER_PORT);
@@ -355,7 +361,7 @@ int dhcprelay_main(int argc, char **argv)
 //   which the reply must be sent (i.e., the host or router interface
 //   connected to the same network as the BOOTP client).  If the content
 //   of the 'giaddr' field does not match one of the relay agent's
-//   directly-connected logical interfaces, the BOOTREPLY messsage MUST be
+//   directly-connected logical interfaces, the BOOTREPLY message MUST be
 //   silently discarded.
 				if (udhcp_read_interface(iface_list[i], NULL, &dhcp_msg.gateway_nip, NULL)) {
 					/* Fall back to our IP on server iface */

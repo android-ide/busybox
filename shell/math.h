@@ -63,7 +63,7 @@
 
 PUSH_AND_SET_FUNCTION_VISIBILITY_TO_HIDDEN
 
-#if ENABLE_SH_MATH_SUPPORT_64
+#if ENABLE_FEATURE_SH_MATH_64
 typedef long long arith_t;
 #define ARITH_FMT "%lld"
 #define strto_arith_t strtoull
@@ -72,11 +72,6 @@ typedef long arith_t;
 #define ARITH_FMT "%ld"
 #define strto_arith_t strtoul
 #endif
-
-/* ash's and hush's endofname is the same, so... */
-# define is_name(c)      ((c) == '_' || isalpha((unsigned char)(c)))
-# define is_in_name(c)   ((c) == '_' || isalnum((unsigned char)(c)))
-const char* FAST_FUNC endofname(const char *name);
 
 typedef const char* FAST_FUNC (*arith_var_lookup_t)(const char *name);
 typedef void        FAST_FUNC (*arith_var_set_t)(const char *name, const char *val);

@@ -6,39 +6,92 @@
  *
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
+//config:config SENDMAIL
+//config:	bool "sendmail"
+//config:	default y
+//config:	help
+//config:	  Barebones sendmail.
+
+//applet:IF_SENDMAIL(APPLET(sendmail, BB_DIR_USR_SBIN, BB_SUID_DROP))
 
 //kbuild:lib-$(CONFIG_SENDMAIL) += sendmail.o mail.o
 
 //usage:#define sendmail_trivial_usage
-//usage:       "[OPTIONS] [RECIPIENT_EMAIL]..."
+//usage:       "[-tv] [-f SENDER] [-amLOGIN 4<user_pass.txt | -auUSER -apPASS]"
+//usage:     "\n		[-w SECS] [-H 'PROG ARGS' | -S HOST] [RECIPIENT_EMAIL]..."
 //usage:#define sendmail_full_usage "\n\n"
 //usage:       "Read email from stdin and send it\n"
 //usage:     "\nStandard options:"
 //usage:     "\n	-t		Read additional recipients from message body"
-//usage:     "\n	-f SENDER	Sender (required)"
+//usage:     "\n	-f SENDER	For use in MAIL FROM:<sender>. Can be empty string"
+//usage:     "\n			Default: -auUSER, or username of current UID"
 //usage:     "\n	-o OPTIONS	Various options. -oi implied, others are ignored"
-//usage:     "\n	-i		-oi synonym. implied and ignored"
+//usage:     "\n	-i		-oi synonym, implied and ignored"
 //usage:     "\n"
 //usage:     "\nBusybox specific options:"
 //usage:     "\n	-v		Verbose"
 //usage:     "\n	-w SECS		Network timeout"
-//usage:     "\n	-H 'PROG ARGS'	Run connection helper"
-//usage:     "\n			Examples:"
-//usage:     "\n			-H 'exec openssl s_client -quiet -tls1 -starttls smtp"
-//usage:     "\n				-connect smtp.gmail.com:25' <email.txt"
-//usage:     "\n				[4<username_and_passwd.txt | -auUSER -apPASS]"
-//usage:     "\n			-H 'exec openssl s_client -quiet -tls1"
-//usage:     "\n				-connect smtp.gmail.com:465' <email.txt"
-//usage:     "\n				[4<username_and_passwd.txt | -auUSER -apPASS]"
-//usage:     "\n	-S HOST[:PORT]	Server"
-//usage:     "\n	-auUSER		Username for AUTH LOGIN"
-//usage:     "\n	-apPASS 	Password for AUTH LOGIN"
-////usage:     "\n	-amMETHOD	Authentication method. Ignored. LOGIN is implied"
+//usage:     "\n	-H 'PROG ARGS'	Run connection helper. Examples:"
+//usage:     "\n		openssl s_client -quiet -tls1 -starttls smtp -connect smtp.gmail.com:25"
+//usage:     "\n		openssl s_client -quiet -tls1 -connect smtp.gmail.com:465"
+//usage:     "\n			$SMTP_ANTISPAM_DELAY: seconds to wait after helper connect"
+//usage:     "\n	-S HOST[:PORT]	Server (default $SMTPHOST or 127.0.0.1)"
+//usage:     "\n	-amLOGIN	Log in using AUTH LOGIN (-amCRAM-MD5 not supported)"
+//usage:     "\n	-auUSER		Username for AUTH"
+//usage:     "\n	-apPASS 	Password for AUTH"
 //usage:     "\n"
-//usage:     "\nOther options are silently ignored; -oi -t is implied"
+//usage:     "\nIf no -a options are given, authentication is not done."
+//usage:     "\nIf -amLOGIN is given but no -au/-ap, user/password is read from fd #4."
+//usage:     "\nOther options are silently ignored; -oi is implied."
 //usage:	IF_MAKEMIME(
-//usage:     "\nUse makemime to create emails with attachments"
+//usage:     "\nUse makemime to create emails with attachments."
 //usage:	)
+
+/* Currently we don't sanitize or escape user-supplied SENDER and RECIPIENT_EMAILs.
+ * We may need to do so. For one, '.' in usernames seems to require escaping!
+ *
+ * From http://cr.yp.to/smtp/address.html:
+ *
+ * SMTP offers three ways to encode a character inside an address:
+ *
+ * "safe": the character, if it is not <>()[].,;:@, backslash,
+ *  double-quote, space, or an ASCII control character;
+ * "quoted": the character, if it is not \012, \015, backslash,
+ *   or double-quote; or
+ * "slashed": backslash followed by the character.
+ *
+ * An encoded box part is either (1) a sequence of one or more slashed
+ * or safe characters or (2) a double quote, a sequence of zero or more
+ * slashed or quoted characters, and a double quote. It represents
+ * the concatenation of the characters encoded inside it.
+ *
+ * For example, the encoded box parts
+ *	angels
+ *	\a\n\g\e\l\s
+ *	"\a\n\g\e\l\s"
+ *	"angels"
+ *	"ang\els"
+ * all represent the 6-byte string "angels", and the encoded box parts
+ *	a\,comma
+ *	\a\,\c\o\m\m\a
+ *	"a,comma"
+ * all represent the 7-byte string "a,comma".
+ *
+ * An encoded address contains
+ *	the byte <;
+ *	optionally, a route followed by a colon;
+ *	an encoded box part, the byte @, and a domain; and
+ *	the byte >.
+ *
+ * It represents an Internet mail address, given by concatenating
+ * the string represented by the encoded box part, the byte @,
+ * and the domain. For example, the encoded addresses
+ *     <God@heaven.af.mil>
+ *     <\God@heaven.af.mil>
+ *     <"God"@heaven.af.mil>
+ *     <@gateway.af.mil,@uucp.local:"\G\o\d"@heaven.af.mil>
+ * all represent the Internet mail address "God@heaven.af.mil".
+ */
 
 #include "libbb.h"
 #include "mail.h"
@@ -92,35 +145,90 @@ static int smtp_check(const char *fmt, int code)
 // strip argument of bad chars
 static char *sane_address(char *str)
 {
-	char *s = str;
-	char *p = s;
+	char *s;
+
+	trim(str);
+	s = str;
 	while (*s) {
-		if (isalnum(*s) || '_' == *s || '-' == *s || '.' == *s || '@' == *s) {
-			*p++ = *s;
+		if (!isalnum(*s) && !strchr("+_-.@", *s)) {
+			bb_error_msg("bad address '%s'", str);
+			/* returning "": */
+			str[0] = '\0';
+			return str;
 		}
 		s++;
 	}
-	*p = '\0';
 	return str;
+}
+
+// check for an address inside angle brackets, if not found fall back to normal
+static char *angle_address(char *str)
+{
+	char *s, *e;
+
+	trim(str);
+	e = last_char_is(str, '>');
+	if (e) {
+		s = strrchr(str, '<');
+		if (s) {
+			*e = '\0';
+			str = s + 1;
+		}
+	}
+	return sane_address(str);
 }
 
 static void rcptto(const char *s)
 {
+	if (!*s)
+		return;
 	// N.B. we don't die if recipient is rejected, for the other recipients may be accepted
 	if (250 != smtp_checkp("RCPT TO:<%s>", s, -1))
 		bb_error_msg("Bad recipient: <%s>", s);
 }
 
+// send to a list of comma separated addresses
+static void rcptto_list(const char *list)
+{
+	char *str = xstrdup(list);
+	char *s = str;
+	char prev = 0;
+	int in_quote = 0;
+
+	while (*s) {
+		char ch = *s++;
+
+		if (ch == '"' && prev != '\\') {
+			in_quote = !in_quote;
+		} else if (!in_quote && ch == ',') {
+			s[-1] = '\0';
+			rcptto(angle_address(str));
+			str = s;
+		}
+		prev = ch;
+	}
+	if (prev != ',')
+		rcptto(angle_address(str));
+	free(str);
+}
+
 int sendmail_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int sendmail_main(int argc UNUSED_PARAM, char **argv)
 {
-	char *opt_connect = opt_connect;
-	char *opt_from;
+	char *opt_connect;
+	char *opt_from = NULL;
 	char *s;
 	llist_t *list = NULL;
 	char *host = sane_address(safe_gethostname());
 	unsigned nheaders = 0;
 	int code;
+	enum {
+		HDR_OTHER = 0,
+		HDR_TOCC,
+		HDR_BCC,
+	} last_hdr = 0;
+	int check_hdr;
+	int has_to = 0;
 
 	enum {
 	//--- standard options
@@ -139,17 +247,22 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 	// init global variables
 	INIT_G();
 
+	// default HOST[:PORT] is $SMTPHOST, or localhost
+	opt_connect = getenv("SMTPHOST");
+	if (!opt_connect)
+		opt_connect = (char *)"127.0.0.1";
+
 	// save initial stdin since body is piped!
 	xdup2(STDIN_FILENO, 3);
 	G.fp0 = xfdopen_for_read(3);
 
 	// parse options
-	// -v is a counter, -f is required. -H and -S are mutually exclusive, -a is a list
-	opt_complementary = "vv:f:w+:H--S:S--H:a::";
+	// -v is a counter, -H and -S are mutually exclusive, -a is a list
+	opt_complementary = "vv:H--S:S--H";
 	// N.B. since -H and -S are mutually exclusive they do not interfere in opt_connect
 	// -a is for ssmtp (http://downloads.openwrt.org/people/nico/man/man8/ssmtp.8.html) compatibility,
 	// it is still under development.
-	opts = getopt32(argv, "tf:o:iw:H:S:a::v", &opt_from, NULL,
+	opts = getopt32(argv, "tf:o:iw:+H:S:a:*:v", &opt_from, NULL,
 			&timeout, &opt_connect, &opt_connect, &list, &verbose);
 	//argc -= optind;
 	argv += optind;
@@ -168,12 +281,13 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 		//	G.method = xstrdup(a+1);
 	}
 	// N.B. list == NULL here
-	//bb_info_msg("OPT[%x] AU[%s], AP[%s], AM[%s], ARGV[%s]", opts, au, ap, am, *argv);
+	//bb_error_msg("OPT[%x] AU[%s], AP[%s], AM[%s], ARGV[%s]", opts, au, ap, am, *argv);
 
 	// connect to server
 
 	// connection helper ordered? ->
 	if (opts & OPT_H) {
+		const char *delay;
 		const char *args[] = { "sh", "-c", opt_connect, NULL };
 		// plug it in
 		launch_helper(args);
@@ -192,7 +306,12 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 		// before 220 reached it. The code below is unsafe in this regard:
 		// in non-STARTTLSed case, we potentially send NOOP before 220
 		// is sent by server.
-		// Ideas? (--delay SECS opt? --assume-starttls-helper opt?)
+		//
+		// If $SMTP_ANTISPAM_DELAY is set, we pause before sending NOOP.
+		//
+		delay = getenv("SMTP_ANTISPAM_DELAY");
+		if (delay)
+			sleep(atoi(delay));
 		code = smtp_check("NOOP", -1);
 		if (code == 220)
 			// we got 220 - this is not STARTTLSed connection,
@@ -204,14 +323,6 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 	} else {
 		// vanilla connection
 		int fd;
-		// host[:port] not explicitly specified? -> use $SMTPHOST
-		// no $SMTPHOST? -> use localhost
-		if (!(opts & OPT_S)) {
-			opt_connect = getenv("SMTPHOST");
-			if (!opt_connect)
-				opt_connect = (char *)"127.0.0.1";
-		}
-		// do connect
 		fd = create_and_connect_stream_or_die(opt_connect, 25);
 		// and make ourselves a simple IO filter
 		xmove_fd(fd, STDIN_FILENO);
@@ -224,7 +335,6 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 	// we should start with modern EHLO
 	if (250 != smtp_checkp("EHLO %s", host, -1))
 		smtp_checkp("HELO %s", host, 250);
-	free(host);
 
 	// perform authentication
 	if (opts & OPT_a) {
@@ -249,13 +359,14 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 	//	Since reading from console may defeat usability, the solution is either to read from a predefined
 	//	file descriptor (e.g. 4), or again from a secured file.
 
-	// got no sender address? -> use system username as a resort
-	// N.B. we marked -f as required option!
-	//if (!G.user) {
-	//	// N.B. IMHO getenv("USER") can be way easily spoofed!
-	//	G.user = xuid2uname(getuid());
-	//	opt_from = xasprintf("%s@%s", G.user, domain);
-	//}
+	// got no sender address? use auth name, then UID username as a last resort
+	if (!opt_from) {
+		opt_from = xasprintf("%s@%s",
+		                     G.user ? G.user : xuid2uname(getuid()),
+		                     xgethostbyname(host)->h_name);
+	}
+	free(host);
+
 	smtp_checkp("MAIL FROM:<%s>", opt_from, 250);
 
 	// process message
@@ -273,7 +384,7 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 			// N.B. we need to escape the leading dot regardless of
 			// whether it is single or not character on the line
 			if ('.' == s[0] /*&& '\0' == s[1] */)
-				printf(".");
+				bb_putchar('.');
 			// dump read line
 			send_r_n(s);
 			free(s);
@@ -282,23 +393,36 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 
 		// analyze headers
 		// To: or Cc: headers add recipients
+		check_hdr = (0 == strncasecmp("To:", s, 3));
+		has_to |= check_hdr;
 		if (opts & OPT_t) {
-			if (0 == strncasecmp("To:", s, 3) || 0 == strncasecmp("Bcc:" + 1, s, 3)) {
-				rcptto(sane_address(s+3));
+			if (check_hdr || 0 == strncasecmp("Bcc:" + 1, s, 3)) {
+				rcptto_list(s+3);
+				last_hdr = HDR_TOCC;
 				goto addheader;
 			}
 			// Bcc: header adds blind copy (hidden) recipient
 			if (0 == strncasecmp("Bcc:", s, 4)) {
-				rcptto(sane_address(s+4));
+				rcptto_list(s+4);
 				free(s);
+				last_hdr = HDR_BCC;
 				continue; // N.B. Bcc: vanishes from headers!
 			}
 		}
-		if (strchr(s, ':') || (list && isspace(s[0]))) {
+		check_hdr = (list && isspace(s[0]));
+		if (strchr(s, ':') || check_hdr) {
 			// other headers go verbatim
 			// N.B. RFC2822 2.2.3 "Long Header Fields" allows for headers to occupy several lines.
 			// Continuation is denoted by prefixing additional lines with whitespace(s).
 			// Thanks (stefan.seyfried at googlemail.com) for pointing this out.
+			if (check_hdr && last_hdr != HDR_OTHER) {
+				rcptto_list(s+1);
+				if (last_hdr == HDR_BCC)
+					continue;
+					// N.B. Bcc: vanishes from headers!
+			} else {
+				last_hdr = HDR_OTHER;
+			}
  addheader:
 			// N.B. we allow MAX_HEADERS generic headers at most to prevent attacks
 			if (MAX_HEADERS && ++nheaders >= MAX_HEADERS)
@@ -309,12 +433,27 @@ int sendmail_main(int argc UNUSED_PARAM, char **argv)
 			// so stop "analyze headers" mode
  reenter:
 			// put recipients specified on cmdline
+			check_hdr = 1;
 			while (*argv) {
 				char *t = sane_address(*argv);
 				rcptto(t);
 				//if (MAX_HEADERS && ++nheaders >= MAX_HEADERS)
 				//	goto bail;
-				llist_add_to_end(&list, xasprintf("To: %s", t));
+				if (!has_to) {
+					const char *hdr;
+
+					if (check_hdr && argv[1])
+						hdr = "To: %s,";
+					else if (check_hdr)
+						hdr = "To: %s";
+					else if (argv[1])
+						hdr = "To: %s," + 3;
+					else
+						hdr = "To: %s" + 3;
+					llist_add_to_end(&list,
+							xasprintf(hdr, t));
+					check_hdr = 0;
+				}
 				argv++;
 			}
 			// enter "put message" mode
