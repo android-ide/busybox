@@ -489,8 +489,13 @@ typedef unsigned smalluint;
    /* ANDROID < 8 has no [f]dprintf at all */
 #  undef HAVE_DPRINTF
 # elif __ANDROID_API__ < 21
+#  if __NDK_MAJOR__ == 15
+   /* NDK 15 has no [f]dprintf at all */
+#   undef HAVE_DPRINTF
+#  else
    /* ANDROID < 21 has fdprintf */
-#  define dprintf fdprintf
+#   define dprintf fdprintf
+#  endif
 # else
    /* ANDROID >= 21 has standard dprintf */
 # endif
