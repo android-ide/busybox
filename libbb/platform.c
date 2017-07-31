@@ -213,3 +213,10 @@ int ttyname_r(int fd, char *buf, size_t buflen)
 	return 0;
 }
 #endif
+
+#ifndef HAVE_WAIT3
+pid_t FAST_FUNC wait3(int *status, int options, struct rusage *rusage)
+{
+	return wait4(-1, status, options, rusage);
+}
+#endif
